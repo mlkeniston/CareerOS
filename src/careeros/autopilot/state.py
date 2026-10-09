@@ -1,6 +1,32 @@
 from __future__ import annotations
 
 from careeros.db import Database
+from careeros.queue import now
+
+
+def dispatch_is_open(conn, fingerprint: str) -> bool:
+    """Keep active and successful fingerprints; release failed work for retry."""
+    row = conn.execute(
+        "SELECT d.kind, d.task_id, t.status FROM autopilot_dispatches d "
+        "JOIN tasks t ON t.id=d.task_id WHERE d.fingerprint=?",
+        (fingerprint,),
+    ).fetchone()
+    if row is None:
+        return False
+    if row["status"] != "failed":
+        return True
+    if row["kind"] == "application":
+        conn.execute(
+            "UPDATE applications SET status='failed', updated_at=? WHERE task_id=? AND status='preparing'",
+            (now(), row["task_id"]),
+        )
+    elif row["kind"] == "portfolio":
+        conn.execute(
+            "UPDATE portfolio_proposals SET status='failed', updated_at=? WHERE task_id=? AND status='preparing'",
+            (now(), row["task_id"]),
+        )
+    conn.execute("DELETE FROM autopilot_dispatches WHERE fingerprint=?", (fingerprint,))
+    return False
 
 
 class AutopilotState:

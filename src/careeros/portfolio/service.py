@@ -13,6 +13,7 @@ from difflib import unified_diff
 from pathlib import Path
 
 from careeros.db import Database
+from careeros.autopilot.state import dispatch_is_open
 from careeros.planner.gateway import PlannerGateway
 from careeros.planner.protocols import PlannerRequest
 from careeros.portfolio.paths import PortfolioPaths, UnsafePortfolioPath
@@ -72,6 +73,36 @@ class PortfolioService:
         with self.db.connect() as conn:
             task_id = self.queue.enqueue_in_transaction(conn, "portfolio", payload, provider, confirm_cloud)
             conn.execute("INSERT INTO portfolio_proposals(id,project_id,task_id,status,title,created_at,updated_at) VALUES(?,?,?,'preparing',?,?,?)", (proposal_id, brief.project_id, task_id, brief.title, stamp, stamp))
+        return task_id, proposal_id
+
+    def create_automatic(self, brief: PortfolioBrief, fingerprint: str) -> tuple[str, str] | None:
+        if not fingerprint or len(fingerprint) > 200:
+            raise ValueError("Automatic portfolio fingerprint is invalid")
+        brief = PortfolioBrief(brief.project_id, brief.title, brief.description)
+        proposal_id = str(uuid.uuid4())
+        payload = {"proposal_id": proposal_id, "brief": asdict(brief)}
+        stamp = now()
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if dispatch_is_open(conn, fingerprint):
+                conn.commit()
+                return None
+            open_proposal = conn.execute(
+                "SELECT 1 FROM portfolio_proposals WHERE status IN ('preparing','needs_review','approved') LIMIT 1"
+            ).fetchone()
+            if open_proposal:
+                conn.commit()
+                return None
+            task_id = self.queue.enqueue_in_transaction(conn, "portfolio", payload, "ollama", False)
+            conn.execute(
+                "INSERT INTO portfolio_proposals(id,project_id,task_id,status,title,created_at,updated_at) VALUES(?,?,?,'preparing',?,?,?)",
+                (proposal_id, brief.project_id, task_id, brief.title, stamp, stamp),
+            )
+            conn.execute(
+                "INSERT INTO autopilot_dispatches(fingerprint,kind,task_id,created_at) VALUES(?,?,?,?)",
+                (fingerprint, "portfolio", task_id, stamp),
+            )
+            conn.commit()
         return task_id, proposal_id
 
     def get(self, proposal_id: str) -> dict | None:

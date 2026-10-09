@@ -103,7 +103,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.lever_sites:
         job_sources.append(LeverSource(feed_client, list(settings.lever_sites)))
     app.state.job_sources = job_sources
-    job_discovery_service = JobDiscoveryService(job_repository, job_sources)
+    job_discovery_service = JobDiscoveryService(
+        job_repository,
+        job_sources,
+        application_service,
+        portfolio_service,
+        profile_repository,
+        resume_repository,
+    )
     app.state.job_discovery_service = job_discovery_service
     worker.register("job_discovery", job_discovery_service.handle_task)
 

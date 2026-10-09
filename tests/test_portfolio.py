@@ -5,6 +5,7 @@ from careeros.main import create_app
 from fastapi.testclient import TestClient
 import sqlite3
 import pytest
+from careeros.portfolio.service import PortfolioBrief
 
 
 def test_paths_reject_traversal_and_allow_project_files(tmp_path):
@@ -123,6 +124,49 @@ def test_proposal_and_queue_task_are_inserted_atomically(client):
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM portfolio_proposals").fetchone()[0] == 0
+
+
+def test_automatic_portfolio_proposal_deduplicates_and_retries_failed_task(client):
+    service = client.app.state.portfolio_service
+    brief = PortfolioBrief("market-python", "Python market showcase", "Show Python skills from recurring internship listings.")
+
+    first = service.create_automatic(brief, "portfolio-fingerprint")
+
+    assert first is not None
+    task_id, proposal_id = first
+    task = client.app.state.queue.get(task_id)
+    assert (task.provider, task.cloud_confirmed) == ("ollama", False)
+    assert service.create_automatic(brief, "portfolio-fingerprint") is None
+    assert service.create_automatic(
+        PortfolioBrief("market-sql", "SQL market showcase", "Show recurring SQL skills."),
+        "different-fingerprint",
+    ) is None
+
+    client.app.state.queue.fail(task_id, "local planner unavailable")
+    retried = service.create_automatic(brief, "portfolio-fingerprint")
+
+    assert retried is not None
+    assert retried[0] != task_id
+    with client.app.state.db.connect() as conn:
+        dispatch = conn.execute("SELECT task_id FROM autopilot_dispatches WHERE fingerprint='portfolio-fingerprint'").fetchone()
+    assert dispatch["task_id"] == retried[0]
+
+
+def test_automatic_portfolio_insert_is_atomic(client):
+    db = client.app.state.db
+    with db.connect() as conn:
+        conn.execute("CREATE TRIGGER reject_automatic_proposal BEFORE INSERT ON portfolio_proposals BEGIN SELECT RAISE(ABORT, 'test'); END")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        client.app.state.portfolio_service.create_automatic(
+            PortfolioBrief("market-python", "Python market showcase", "Show recurring Python skills."),
+            "atomic-fingerprint",
+        )
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM portfolio_proposals").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM autopilot_dispatches").fetchone()[0] == 0
 
 
 def test_interrupted_cloud_proposal_is_visible_with_retry_brief(tmp_path):

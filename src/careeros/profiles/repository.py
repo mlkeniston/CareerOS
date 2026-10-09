@@ -68,6 +68,11 @@ class ResumeRepository:
             rows = conn.execute("SELECT * FROM resumes ORDER BY updated_at DESC").fetchall()
         return [_resume(row) for row in rows]
 
+    def most_recent(self) -> Resume | None:
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT * FROM resumes ORDER BY updated_at DESC, rowid DESC LIMIT 1").fetchone()
+        return _resume(row) if row else None
+
     def update(self, resume_id: str, name: str, text: str) -> Resume | None:
         name, text = _validate_resume(name, text)
         with self.db.connect() as conn:

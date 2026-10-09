@@ -8,6 +8,7 @@ import uuid
 from dataclasses import asdict, dataclass
 
 from careeros.db import Database
+from careeros.autopilot.state import dispatch_is_open
 from careeros.jobs.repository import JobRepository
 from careeros.planner.gateway import PlannerGateway
 from careeros.planner.protocols import PlannerRequest
@@ -55,6 +56,42 @@ class ApplicationService:
         with self.db.connect() as conn:
             task_id = self.queue.enqueue_in_transaction(conn, "application", payload, provider, confirm_cloud)
             conn.execute("INSERT INTO applications(id,job_id,resume_id,task_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (application_id, job_id, resume_id, task_id, "preparing", stamp, stamp))
+        return self.get(application_id), task_id
+
+    def create_automatic(self, job_id: str, resume_id: str, fingerprint: str) -> tuple[Application, str] | None:
+        if not fingerprint or len(fingerprint) > 200:
+            raise ValueError("Automatic application fingerprint is invalid")
+        if self.jobs.get(job_id) is None:
+            raise LookupError("Saved job not found")
+        if self.resumes.get(resume_id) is None:
+            raise LookupError("Resume not found")
+        application_id = str(uuid.uuid4())
+        stamp = now()
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if dispatch_is_open(conn, fingerprint):
+                conn.commit()
+                return None
+            existing = conn.execute(
+                "SELECT 1 FROM applications WHERE job_id=? AND resume_id=? "
+                "AND status IN ('preparing','needs_review','approved') LIMIT 1",
+                (job_id, resume_id),
+            ).fetchone()
+            if existing:
+                conn.commit()
+                return None
+            task_id = self.queue.enqueue_in_transaction(
+                conn, "application", {"application_id": application_id}, "ollama", False
+            )
+            conn.execute(
+                "INSERT INTO applications(id,job_id,resume_id,task_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                (application_id, job_id, resume_id, task_id, "preparing", stamp, stamp),
+            )
+            conn.execute(
+                "INSERT INTO autopilot_dispatches(fingerprint,kind,task_id,created_at) VALUES(?,?,?,?)",
+                (fingerprint, "application", task_id, stamp),
+            )
+            conn.commit()
         return self.get(application_id), task_id
 
     def get(self, application_id: str) -> Application | None:
