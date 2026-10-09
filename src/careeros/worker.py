@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -15,9 +16,10 @@ class TaskOutcome:
 
 
 class Worker:
-    def __init__(self, queue: TaskQueue, handlers: dict[str, Callable[[Task], TaskOutcome]] | None = None):
+    def __init__(self, queue: TaskQueue, handlers: dict[str, Callable[[Task], TaskOutcome]] | None = None, before_claim: Callable[[], None] | None = None):
         self.queue = queue
         self.handlers = dict(handlers or {})
+        self.before_claim = before_claim
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -25,6 +27,11 @@ class Worker:
         self.handlers[kind] = handler
 
     def run_once(self) -> bool:
+        if self.before_claim is not None:
+            try:
+                self.before_claim()
+            except Exception:
+                logging.getLogger(__name__).exception("before_claim hook failed")
         task = self.queue.claim_next(set(self.handlers))
         if task is None:
             return False

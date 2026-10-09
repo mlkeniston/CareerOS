@@ -33,6 +33,19 @@ def test_office_and_stations_are_served(client):
     assert 'data-station="portfolio"' in page
 
 
+def test_autopilot_api_reports_schedule_and_persists_pause(client):
+    initial = client.get("/api/autopilot")
+    assert initial.status_code == 200
+    assert initial.json()["enabled"] is True
+    assert "last_discovery_queued_at" in initial.json()
+    assert "next_discovery_at" in initial.json()
+
+    paused = client.put("/api/autopilot", json={"enabled": False})
+    assert paused.status_code == 200
+    assert paused.json()["enabled"] is False
+    assert client.get("/api/autopilot").json()["enabled"] is False
+
+
 def test_openai_key_is_never_returned_by_settings(tmp_path):
     app = create_app(Settings(data_dir=tmp_path, worker_enabled=False, openai_api_key="sk-local-test-secret"))
     with TestClient(app) as client:

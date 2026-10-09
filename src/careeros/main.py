@@ -4,12 +4,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
+import logging
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from careeros.api import applications, health, jobs, portfolio, profiles, settings as settings_api, tasks
+from careeros.api import applications, autopilot, health, jobs, portfolio, profiles, settings as settings_api, tasks
 from careeros.applications.service import ApplicationService
+from careeros.autopilot.scheduler import AutopilotScheduler
+from careeros.autopilot.state import AutopilotState
 from careeros.config import Settings
 from careeros.db import Database
 from careeros.jobs.arbeitnow import ArbeitnowSource
@@ -32,6 +35,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     db = Database(settings.data_dir / "careeros.sqlite3")
     db.initialize()
     queue = TaskQueue(db)
+    autopilot_state = AutopilotState(db)
+    autopilot_scheduler = AutopilotScheduler(db, queue)
     job_repository = JobRepository(db)
     profile_repository = ProfileRepository(db)
     resume_repository = ResumeRepository(db)
@@ -45,7 +50,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application_service = ApplicationService(db, queue, gateway, job_repository, profile_repository, resume_repository)
     portfolio_paths = PortfolioPaths(settings.data_dir)
     portfolio_service = PortfolioService(db, queue, gateway, portfolio_paths)
-    worker = Worker(queue)
+    def tick_autopilot() -> None:
+        try:
+            autopilot_scheduler.maybe_enqueue_discovery()
+        except Exception as exc:
+            try:
+                autopilot_state.record_error(str(exc))
+            except Exception:
+                logging.getLogger(__name__).exception("could not persist autopilot scheduler error")
+            logging.getLogger(__name__).exception("autopilot scheduler tick failed")
+        else:
+            autopilot_state.clear_error()
+
+    worker = Worker(queue, before_claim=tick_autopilot)
     worker.register("application", application_service.handle_task)
     worker.register("portfolio", portfolio_service.handle_task)
 
@@ -67,6 +84,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.queue = queue
+    app.state.autopilot_state = autopilot_state
+    app.state.autopilot_scheduler = autopilot_scheduler
     app.state.gateway = gateway
     app.state.worker = worker
     app.state.job_repository = job_repository
@@ -84,7 +103,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_sources.append(LeverSource(feed_client, list(settings.lever_sites)))
     app.state.job_sources = job_sources
 
-    for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, portfolio.router):
+    for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, portfolio.router, autopilot.router):
         app.include_router(router)
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
