@@ -1,4 +1,5 @@
 export const LOGICAL_SIZE = Object.freeze({ width: 600, height: 338 });
+export const WORKER_DISPLAY_SCALE = 0.72;
 
 export const ISO_VIEW = Object.freeze({
   columns: 18,

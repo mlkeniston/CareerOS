@@ -7,7 +7,7 @@ const rendererSource = await readFile(new URL("../src/careeros/static/office-ren
 const layoutUrl = `data:text/javascript;base64,${Buffer.from(layoutSource).toString("base64")}`;
 const rendererModule = rendererSource.replace('from "./office-layout.js"', `from "${layoutUrl}"`);
 const { OfficeRenderer } = await import(`data:text/javascript;base64,${Buffer.from(rendererModule).toString("base64")}`);
-const { FLOOR_CELLS, STATIONS, WORKER_APPEARANCE } = await import(layoutUrl);
+const { FLOOR_CELLS, STATIONS, WORKER_APPEARANCE, WORKER_DISPLAY_SCALE } = await import(layoutUrl);
 
 function canvasHarness() {
   const filledStyles = [];
@@ -135,8 +135,8 @@ test("higher-density worker pixels keep the same clickable sprite footprint", ()
     });
     const actor = renderer.actors.get("job-hunter");
     const appearance = WORKER_APPEARANCE["job-hunter"];
-    assert.ok(Math.abs(actor.bounds.width - 22 * renderer.project.scale) < 0.01);
-    assert.ok(Math.abs(actor.bounds.height - 36 * renderer.project.scale) < 0.01);
+    assert.ok(Math.abs(actor.bounds.width - 22 * WORKER_DISPLAY_SCALE * renderer.project.scale) < 0.01);
+    assert.ok(Math.abs(actor.bounds.height - 36 * WORKER_DISPLAY_SCALE * renderer.project.scale) < 0.01);
     assert.ok(appearance.sprite.length >= 70 && appearance.sprite[0].length >= 40);
     renderer.destroy();
   });

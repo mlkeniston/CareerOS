@@ -10,6 +10,7 @@ import {
   SPRITE_COLORS,
   STATIONS,
   WORKER_APPEARANCE,
+  WORKER_DISPLAY_SCALE,
   createIsoProjector,
   findStationAt,
 } from "./office-layout.js";
@@ -664,7 +665,7 @@ export class OfficeRenderer {
   drawActor(actor, timestamp) {
     const appearance = WORKER_APPEARANCE[actor.id];
     const sprite = appearance.sprite;
-    const pixelScale = this.project.scale / 2;
+    const pixelScale = this.project.scale * WORKER_DISPLAY_SCALE / 2;
     const width = sprite[0].length;
     const height = sprite.length;
     const point = this.project(actor.col, actor.row);
