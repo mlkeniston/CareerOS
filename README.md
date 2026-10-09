@@ -21,7 +21,7 @@ CareerOS is a local-first workspace for finding technology internships and jobs,
 
 ## Run locally
 
-1. Install Python 3.11+ and [Ollama](https://ollama.com/download).
+1. Install Python 3.11+ and [Ollama](https://ollama.com/download). Open the Ollama Mac app so its local service is running.
 2. Open Terminal in this folder and create an environment:
 
    ```bash
@@ -31,15 +31,14 @@ CareerOS is a local-first workspace for finding technology internships and jobs,
    pip install -e '.[dev]'
    ```
 
-3. Download both local models and start Ollama:
+3. Download both local models while Ollama is running:
 
    ```bash
    ollama pull qwen2.5:1.5b
    ollama pull qwen3.5:2b-q4_K_M
-   ollama serve
    ```
 
-   If Ollama is already running from its Mac app, leave that process running and skip `ollama serve`.
+   If you use Ollama without its Mac app, run `ollama serve` in a separate Terminal window and leave it open while CareerOS is running.
 
    LinkedIn Outreach uses its own Ollama model so its worker can be configured independently. The default `qwen3.5:2b-q4_K_M` tag is about 1.9 GB; install it once with the command above. If the model is missing, the office shows the exact install command and pauses outreach drafts until it is ready. Resume content stays on this Mac.
 
