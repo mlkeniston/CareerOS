@@ -1,6 +1,13 @@
+import { OfficeRenderer } from "./office-renderer.js";
+
 const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+const officeRenderer = new OfficeRenderer($("#office-canvas"), {
+  onSelect: selection => document.dispatchEvent(new CustomEvent("careeros:office-select", { detail: selection })),
+});
+officeRenderer.update({ workers: [], counts: {} });
+window.addEventListener("pagehide", () => officeRenderer.destroy(), { once: true });
 
 function element(tag, className = "", text = "") {
   const node = document.createElement(tag);
