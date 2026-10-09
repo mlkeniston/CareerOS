@@ -121,6 +121,20 @@ def test_remote_ollama_waits_without_repeatedly_queuing_outreach(client, fake_pl
     assert "Ollama on this Mac" in worker["task_label"]
 
 
+def test_missing_outreach_model_waits_without_queuing_tasks(client, fake_planner):
+    _prepare_matching_discovery(client)
+    fake_planner.health_state = "model_missing"
+
+    first = _run_discovery(client)
+    second = _run_discovery(client)
+
+    assert first.result["outreach_queued"] is False
+    assert second.result["outreach_queued"] is False
+    assert not any(task.kind == "outreach" for task in client.app.state.queue.list(50))
+    worker = next(item for item in client.get("/api/workspace").json()["workers"] if item["id"] == "linkedin-outreach")
+    assert worker["model_status"] == "model_missing"
+
+
 def test_outreach_moves_to_the_next_matching_role_after_one_is_already_queued(client):
     _prepare_matching_discovery(client)
     client.app.state.job_discovery_service.sources = [_Source([

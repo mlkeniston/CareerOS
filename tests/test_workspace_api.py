@@ -68,6 +68,8 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     assert workers["portfolio-engineer"]["status"] == "needs_review"
     assert "since" not in workers["portfolio-engineer"]
     assert workers["linkedin-outreach"]["status"] == "needs_review"
+    assert workers["linkedin-outreach"]["model"] == "qwen3.5:2b-q4_K_M"
+    assert workers["linkedin-outreach"]["model_status"] == "ready"
     assert workers["linkedin-outreach"]["task_id"] == outreach_task
     assert "LinkedIn draft" in workers["linkedin-outreach"]["task_label"]
     assert "target roles" in workers["resume-analyst"]["task_label"].lower()
@@ -108,3 +110,17 @@ def test_snapshot_explains_missing_resume_without_claiming_working(client, monke
     assert workers["application-prep"]["task_label"] == "Add a resume to enable draft preparation"
     assert workers["application-prep"].get("since") is None
     assert snapshot["model"]["state"] == "offline"
+
+
+def test_outreach_worker_shows_model_install_state(client, fake_planner):
+    fake_planner.health_state = "model_missing"
+    client.app.state.settings.outreach_model = "qwen3.5:4b-q4_K_M"
+
+    worker = next(
+        item for item in client.get("/api/workspace").json()["workers"]
+        if item["id"] == "linkedin-outreach"
+    )
+
+    assert worker["model"] == "qwen3.5:4b-q4_K_M"
+    assert worker["model_status"] == "model_missing"
+    assert "ollama pull qwen3.5:4b-q4_k_m" in worker["task_label"].casefold()

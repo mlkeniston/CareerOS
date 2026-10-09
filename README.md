@@ -31,14 +31,17 @@ CareerOS is a local-first workspace for finding technology internships and jobs,
    pip install -e '.[dev]'
    ```
 
-3. Download the default local model and start Ollama:
+3. Download both local models and start Ollama:
 
    ```bash
    ollama pull qwen2.5:1.5b
+   ollama pull qwen3.5:2b-q4_K_M
    ollama serve
    ```
 
    If Ollama is already running from its Mac app, leave that process running and skip `ollama serve`.
+
+   LinkedIn Outreach uses its own Ollama model so its worker can be configured independently. The default `qwen3.5:2b-q4_K_M` tag is about 1.9 GB; install it once with the command above. If the model is missing, the office shows the exact install command and pauses outreach drafts until it is ready. Resume content stays on this Mac.
 
 4. Start CareerOS in another Terminal window:
 
@@ -113,6 +116,7 @@ Copy `.env.example` to `.env` to customize settings. The supported variables are
 | `CAREEROS_PLANNER_PROVIDER` | `ollama` | Initial planner selection |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama address |
 | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Local model tag |
+| `CAREEROS_OUTREACH_MODEL` | `qwen3.5:2b-q4_K_M` | Dedicated local model for LinkedIn outreach drafts |
 | `OPENAI_API_KEY` | unset | Optional API credential for GPT-6 Luna |
 | `CAREEROS_GREENHOUSE_BOARDS` | empty | Optional public Greenhouse board IDs |
 | `CAREEROS_LEVER_SITES` | empty | Optional public Lever site IDs |

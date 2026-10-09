@@ -14,6 +14,13 @@ def test_default_settings_use_local_planner_and_loopback(tmp_path):
     assert settings.host == "127.0.0.1"
     assert settings.planner_provider == "ollama"
     assert settings.ollama_model == "qwen2.5:1.5b"
+    assert settings.outreach_model == "qwen3.5:2b-q4_K_M"
+
+
+def test_outreach_model_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("CAREEROS_OUTREACH_MODEL", "qwen3.5:4b-q4_K_M")
+
+    assert Settings.from_env().outreach_model == "qwen3.5:4b-q4_K_M"
 
 
 def test_board_ids_reject_path_and_query_injection(monkeypatch):
@@ -30,6 +37,7 @@ def test_office_and_stations_are_served(client):
     assert '<canvas id="office-canvas"' in page
     assert 'aria-label="CareerOS pixel office.' in page
     assert 'id="worker-tooltip"' in page
+    assert 'id="worker-tooltip-model"' in page
     assert 'role="tooltip"' in page
     assert 'id="worker-roster"' in page
     assert 'id="task-inspector"' in page
@@ -48,6 +56,7 @@ def test_office_client_connects_live_workspace_and_accessible_controls(client):
     assert 'api("/api/workspace")' in script
     assert "officeRenderer.update(snapshot)" in script
     assert "renderWorkerTooltip" in script
+    assert "worker-tooltip-model" in script
     renderer = client.get("/static/office-renderer.js").text
     assert 'addEventListener("pointermove"' in renderer
     assert 'onHover(this.hoveredWorker, this.hoverPosition)' in renderer

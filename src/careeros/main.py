@@ -49,8 +49,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         },
         openai_configured=bool(settings.openai_api_key),
     )
+    outreach_planner = OllamaPlanner(settings.ollama_base_url, settings.outreach_model)
     application_service = ApplicationService(db, queue, gateway, job_repository, profile_repository, resume_repository)
-    outreach_service = OutreachService(db, queue, gateway, job_repository, profile_repository, resume_repository)
+    outreach_service = OutreachService(db, queue, outreach_planner, job_repository, profile_repository, resume_repository)
     portfolio_paths = PortfolioPaths(settings.data_dir)
     portfolio_service = PortfolioService(db, queue, gateway, portfolio_paths)
     def tick_autopilot() -> None:
@@ -83,6 +84,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+        client = getattr(outreach_planner, "client", None)
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
     app = FastAPI(title="CareerOS", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.settings = settings
@@ -91,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.autopilot_state = autopilot_state
     app.state.autopilot_scheduler = autopilot_scheduler
     app.state.gateway = gateway
+    app.state.outreach_planner = outreach_planner
     app.state.worker = worker
     app.state.job_repository = job_repository
     app.state.profile_repository = profile_repository

@@ -14,6 +14,7 @@ class Settings:
     worker_enabled: bool = True
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5:1.5b"
+    outreach_model: str = "qwen3.5:2b-q4_K_M"
     planner_provider: str = "ollama"
     openai_api_key: str | None = None
     greenhouse_boards: tuple[str, ...] = ()
@@ -39,6 +40,7 @@ class Settings:
             worker_enabled=os.getenv("CAREEROS_WORKER_ENABLED", "true").lower() not in {"0", "false", "no"},
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
             ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b"),
+            outreach_model=os.getenv("CAREEROS_OUTREACH_MODEL", "qwen3.5:2b-q4_K_M"),
             planner_provider=provider,
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             greenhouse_boards=_csv_ids(os.getenv("CAREEROS_GREENHOUSE_BOARDS", "")),

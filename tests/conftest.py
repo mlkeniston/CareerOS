@@ -14,6 +14,7 @@ class FakePlanner:
         self.calls = []
         self.result = None
         self.base_url = "http://127.0.0.1:11434"
+        self.health_state = "ready"
 
     def generate(self, request):
         self.calls.append(request)
@@ -25,6 +26,9 @@ class FakePlanner:
             value = {"cover_letter": "Draft", "resume_alignment": ["Python"], "answers": {}, "next_steps": ["Review"]}
         return PlannerResult(text=json.dumps(value), files=[])
 
+    def health(self):
+        return self.health_state
+
 
 @pytest.fixture
 def app(tmp_path):
@@ -33,6 +37,7 @@ def app(tmp_path):
     fake = FakePlanner()
     application.state.fake_planner = fake
     application.state.gateway.planners["ollama"] = fake
+    application.state.outreach_service.planner = fake
     return application
 
 

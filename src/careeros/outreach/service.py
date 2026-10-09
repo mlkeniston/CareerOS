@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from careeros.autopilot.state import dispatch_is_open
 from careeros.db import Database
 from careeros.jobs.repository import JobRepository
-from careeros.planner.gateway import PlannerGateway
+from careeros.planner.ollama import OllamaPlanner
 from careeros.planner.protocols import PlannerRequest
 from careeros.profiles.repository import ProfileRepository, ResumeRepository
 from careeros.queue import Task, TaskQueue, now
@@ -19,14 +19,19 @@ from careeros.outreach.models import InvalidOutreachDraft, OutreachDraft, Outrea
 
 
 class OutreachService:
-    def __init__(self, db: Database, queue: TaskQueue, gateway: PlannerGateway, jobs: JobRepository,
+    def __init__(self, db: Database, queue: TaskQueue, planner: OllamaPlanner, jobs: JobRepository,
                  profiles: ProfileRepository, resumes: ResumeRepository):
-        self.db, self.queue, self.gateway = db, queue, gateway
+        self.db, self.queue, self.planner = db, queue, planner
         self.jobs, self.profiles, self.resumes = jobs, profiles, resumes
 
     def local_endpoint_ready(self) -> bool:
-        ollama = self.gateway.planners.get("ollama")
-        return _is_loopback_url(getattr(ollama, "base_url", ""))
+        return _is_loopback_url(getattr(self.planner, "base_url", ""))
+
+    def model_status(self) -> str:
+        if not self.local_endpoint_ready():
+            return "remote"
+        health = getattr(self.planner, "health", None)
+        return health() if callable(health) else "offline"
 
     def create_automatic(self, job_id: str, resume_id: str, fingerprint: str) -> tuple[OutreachDraft, str] | None:
         if not fingerprint or len(fingerprint) > 200:
@@ -87,7 +92,7 @@ class OutreachService:
                 raise LookupError("Outreach draft record not found")
             snapshot = self._snapshot(draft.job_id, draft.resume_id)
             request = PlannerRequest(_outreach_task(snapshot), _outreach_instruction())
-            result = self.gateway.generate("ollama", request, cloud_confirmed=False)
+            result = self.planner.generate(request)
             try:
                 message = OutreachMessage.parse(json.loads(result.text))
             except (json.JSONDecodeError, InvalidOutreachDraft) as exc:

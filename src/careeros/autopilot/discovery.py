@@ -110,7 +110,7 @@ class JobDiscoveryService:
     def _queue_outreach(self) -> bool:
         if not all((self.outreach, self.profiles, self.resumes)):
             return False
-        if not self.outreach.local_endpoint_ready():
+        if self.outreach.model_status() != "ready":
             return False
         profile = self.profiles.get()
         roles = [role.strip() for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()]

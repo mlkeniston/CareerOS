@@ -347,6 +347,15 @@ function renderWorkerTooltip(workerId, position) {
   if (worker.since) details.push(`FOR ${formatElapsed(worker.since)}`);
   if (worker.task_id) details.push(`#${worker.task_id}`);
   $("#worker-tooltip-meta").textContent = details.join("  /  ");
+  const modelLine = $("#worker-tooltip-model");
+  if (worker.model) {
+    const modelState = worker.model_status ? ` · ${formatStatus(worker.model_status)}` : "";
+    modelLine.textContent = `Ollama · ${worker.model}${modelState}`;
+    modelLine.hidden = false;
+  } else {
+    modelLine.textContent = "";
+    modelLine.hidden = true;
+  }
   tooltip.className = `worker-tooltip status-${safeStatus(worker.status)}`;
   tooltip.hidden = false;
   const frame = $(".canvas-frame");

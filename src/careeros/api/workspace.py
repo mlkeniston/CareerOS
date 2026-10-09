@@ -60,7 +60,9 @@ def get_workspace(request: Request):
     has_resume = request.app.state.resume_repository.most_recent() is not None
     profile = request.app.state.profile_repository.get()
     has_target_roles = bool([role for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()])
-    outreach_local_endpoint = request.app.state.outreach_service.local_endpoint_ready()
+    outreach_service = request.app.state.outreach_service
+    outreach_model_state = outreach_service.model_status()
+    outreach_model_name = request.app.state.settings.outreach_model
     recent_jobs = request.app.state.job_repository.recent(limit=500)
     jobs_matched = sum(1 for job in recent_jobs if score_technology_role(job)[0] >= 70)
     worker_items = []
@@ -72,11 +74,14 @@ def get_workspace(request: Request):
             "station_id": station_id,
             "color": color,
         }
+        if worker_id == "linkedin-outreach":
+            worker.update({"model": outreach_model_name, "model_status": outreach_model_state})
         if task is not None:
             worker.update(_worker_task(task))
         else:
             status, label = _waiting_state(
-                worker_id, state["enabled"], has_resume, has_target_roles, model_state, outreach_local_endpoint
+                worker_id, state["enabled"], has_resume, has_target_roles, model_state,
+                outreach_model_state, outreach_model_name,
             )
             worker.update({"status": status, "task_label": label})
         worker_items.append(worker)
@@ -150,13 +155,19 @@ def _waiting_state(
     has_resume: bool,
     has_target_roles: bool,
     model_state: str,
-    outreach_local_endpoint: bool = True,
+    outreach_model_state: str = "ready",
+    outreach_model_name: str = "qwen3.5:2b-q4_K_M",
 ) -> tuple[str, str]:
     if worker_id == "job-hunter":
         return ("paused", "Job discovery is paused") if not enabled else ("idle", "Waiting for the next listing scan")
     if worker_id in {"resume-analyst", "application-prep", "linkedin-outreach"}:
-        if worker_id == "linkedin-outreach" and not outreach_local_endpoint:
-            return "waiting", "LinkedIn outreach needs Ollama on this Mac"
+        if worker_id == "linkedin-outreach":
+            if outreach_model_state == "remote":
+                return "waiting", "LinkedIn outreach needs Ollama on this Mac"
+            if outreach_model_state == "offline":
+                return "waiting", "Start Ollama on this Mac"
+            if outreach_model_state == "model_missing":
+                return "waiting", f"Install model with ollama pull {outreach_model_name}"
         if not has_resume:
             return "waiting", "Add a resume to enable draft preparation"
         if not has_target_roles:
