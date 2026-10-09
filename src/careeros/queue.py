@@ -28,6 +28,8 @@ class Task:
     status: str
     result: dict[str, Any] | None
     error: str | None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class TaskQueue:
@@ -96,4 +98,9 @@ class TaskQueue:
 
 
 def _task(row: Any) -> Task:
-    return Task(row["id"], row["kind"], json.loads(row["payload_json"]), row["provider"], bool(row["cloud_confirmed"]), row["status"], json.loads(row["result_json"]) if row["result_json"] else None, row["error"])
+    return Task(
+        row["id"], row["kind"], json.loads(row["payload_json"]), row["provider"],
+        bool(row["cloud_confirmed"]), row["status"],
+        json.loads(row["result_json"]) if row["result_json"] else None,
+        row["error"], row["created_at"], row["updated_at"],
+    )

@@ -5,6 +5,7 @@ import httpx
 from careeros.planner.gateway import PlannerGateway, ProviderUnavailable, PaidUseConfirmationRequired
 from careeros.planner.protocols import PlannerRequest, PlannerResult
 from careeros.planner.openai import OpenAIPlanner
+from careeros.planner.ollama import OllamaPlanner
 
 
 class Spy:
@@ -58,3 +59,41 @@ def test_openai_adapter_posts_only_after_invocation_to_requested_model():
     assert body["max_output_tokens"] == 4000
     assert observed[0].headers["Authorization"] == "Bearer sk-test-only"
     client.close()
+
+
+def test_ollama_health_checks_tags_without_generating_text():
+    observed = []
+
+    def handler(request):
+        observed.append(request)
+        return httpx.Response(200, json={"models": [{"name": "qwen2.5:1.5b"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    planner = OllamaPlanner("http://127.0.0.1:11434", "qwen2.5:1.5b")
+    planner.client.close()
+    planner.client = client
+
+    assert planner.health() == "ready"
+    assert len(observed) == 1
+    assert observed[0].method == "GET"
+    assert str(observed[0].url) == "http://127.0.0.1:11434/api/tags"
+    client.close()
+
+
+def test_ollama_health_distinguishes_missing_model_from_offline_server():
+    missing_client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"models": []})))
+    missing = OllamaPlanner("http://127.0.0.1:11434", "qwen2.5:1.5b")
+    missing.client.close()
+    missing.client = missing_client
+    assert missing.health() == "model_missing"
+    missing_client.close()
+
+    def offline(request):
+        raise httpx.ConnectError("offline", request=request)
+
+    offline_client = httpx.Client(transport=httpx.MockTransport(offline))
+    unavailable = OllamaPlanner("http://127.0.0.1:11434", "qwen2.5:1.5b")
+    unavailable.client.close()
+    unavailable.client = offline_client
+    assert unavailable.health() == "offline"
+    offline_client.close()

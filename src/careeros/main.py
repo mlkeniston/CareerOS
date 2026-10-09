@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from careeros.api import applications, autopilot, health, jobs, portfolio, profiles, settings as settings_api, tasks
+from careeros.api import applications, autopilot, health, jobs, portfolio, profiles, settings as settings_api, tasks, workspace
 from careeros.applications.service import ApplicationService
 from careeros.autopilot.scheduler import AutopilotScheduler
 from careeros.autopilot.state import AutopilotState
@@ -114,7 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.job_discovery_service = job_discovery_service
     worker.register("job_discovery", job_discovery_service.handle_task)
 
-    for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, portfolio.router, autopilot.router):
+    for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, portfolio.router, autopilot.router, workspace.router):
         app.include_router(router)
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")

@@ -46,6 +46,12 @@ def test_autopilot_api_reports_schedule_and_persists_pause(client):
     assert client.get("/api/autopilot").json()["enabled"] is False
 
 
+def test_live_workspace_snapshot_route_is_served(client):
+    response = client.get("/api/workspace")
+    assert response.status_code == 200
+    assert {"autopilot", "workers", "counts", "activity", "model"} <= response.json().keys()
+
+
 def test_openai_key_is_never_returned_by_settings(tmp_path):
     app = create_app(Settings(data_dir=tmp_path, worker_enabled=False, openai_api_key="sk-local-test-secret"))
     with TestClient(app) as client:
