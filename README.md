@@ -9,7 +9,8 @@ CareerOS is a local-first workspace for finding technology internships and jobs,
 - Ask a planner to prepare a cover letter, resume-alignment notes, answers, and next steps. Edit and approve the draft before exporting Markdown.
 - Give the portfolio worker a project brief, inspect its proposed files and diffs, approve them, then apply them inside the managed portfolio folder.
 - Keep a persistent SQLite task queue and recover local work after restart.
-- Use a top-down pixel-art office as the navigation for each station.
+- See queue-backed workers moving through a top-down pixel-art office. The roster, work log, task inspector, and counters use persisted local task state.
+- Start unattended local job discovery automatically and repeat every six hours while CareerOS is running.
 
 ## Requirements
 
@@ -47,6 +48,16 @@ CareerOS is a local-first workspace for finding technology internships and jobs,
    Then open [http://127.0.0.1:8000](http://127.0.0.1:8000). The default bind address is loopback, so other devices cannot reach the app.
 
 The first start creates `data/careeros.sqlite3`. Back up the `data/` folder to preserve your local profile, resumes, saved jobs, task history, and portfolio workspace.
+
+## Office autopilot
+
+When CareerOS starts, the office worker queues a public listing scan automatically. It repeats every six hours while the app is open. Discovery reads the configured public job feeds and stores results in the local database; it does not need your profile, resume, API key, or search terms. The default Arbeitnow feed is included. Optional Greenhouse and Lever boards can be added below.
+
+The office shows each worker's actual queue state. Select a worker or station to inspect it, and use **Pause discovery** to stop future automatic scans. Work already queued is allowed to finish. Closing CareerOS stops the worker; the next scan runs after you reopen it if six hours have elapsed. The saved schedule prevents duplicate scans when the app restarts.
+
+Job discovery works without Ollama. To let CareerOS prepare a matching application draft automatically, save target roles and at least one resume version in Resume Team, then keep the configured local Ollama model available. A prepared application stays in Draft review until you inspect and approve it. CareerOS never submits an application. If Ollama is unavailable, discovery continues and the office shows the affected task state.
+
+The portfolio worker can stage a project proposal after the job feed contains recurring technology skill evidence. It uses the local planner, and its files remain staged for your review. CareerOS does not run generated code or apply proposal files without your approval.
 
 ## Optional OpenAI planner
 
