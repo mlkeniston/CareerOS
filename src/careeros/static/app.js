@@ -339,7 +339,7 @@ function renderWorkerTooltip(workerId, position) {
   $("#worker-tooltip-name").textContent = worker.department || worker.name || worker.id;
   $("#worker-tooltip-task").textContent = worker.task_label || "Waiting for work";
   const details = [formatStatus(worker.status).toUpperCase()];
-  if (worker.since) details.push(`${worker.status === "working" ? "WORKING" : "SINCE"} ${formatElapsed(worker.since)}`);
+  if (worker.since) details.push(`FOR ${formatElapsed(worker.since)}`);
   if (worker.task_id) details.push(`#${worker.task_id}`);
   $("#worker-tooltip-meta").textContent = details.join("  /  ");
   tooltip.className = `worker-tooltip status-${safeStatus(worker.status)}`;
