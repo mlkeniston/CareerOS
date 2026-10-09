@@ -39,7 +39,12 @@
           <section class="map-panel" aria-labelledby="map-heading">
             <h2 id="map-heading" class="visually-hidden">CareerOS station</h2>
             <div class="canvas-frame">
-              <canvas id="office-canvas" role="img" tabindex="0" aria-label="CareerOS pixel office. Hover over a worker for its task, status, and timing. Click a worker or room for details."></canvas>
+              <canvas id="office-canvas" role="img" tabindex="0" aria-label="CareerOS pixel office. Drag to orbit. With the office focused, use the left and right arrow keys to rotate and Home to reset. Hover over a worker for its task, status, and timing. Click a worker or room for details."></canvas>
+              <div class="view-orbit-controls" aria-label="Office camera controls">
+                <span>DRAG / ← → ORBIT</span>
+                <output id="office-view-angle" aria-live="off">000°</output>
+                <button id="office-reset-view" type="button" aria-label="Reset office view">RESET</button>
+              </div>
               <div id="worker-tooltip" class="worker-tooltip" role="tooltip" hidden>
                 <strong id="worker-tooltip-name"></strong>
                 <span id="worker-tooltip-task"></span>

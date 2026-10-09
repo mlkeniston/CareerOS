@@ -18,6 +18,48 @@ export function projectIso(col, row) {
   };
 }
 
+export function createIsoProjector(rotationDegrees = 0) {
+  const radians = (rotationDegrees * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const centerCol = (ISO_VIEW.columns - 1) / 2;
+  const centerRow = (ISO_VIEW.rows - 1) / 2;
+  const raw = (col, row) => {
+    const dx = col - centerCol;
+    const dy = row - centerRow;
+    const rotatedCol = dx * cosine - dy * sine;
+    const rotatedRow = dx * sine + dy * cosine;
+    return {
+      x: (rotatedCol - rotatedRow) * ISO_VIEW.tileWidth / 2,
+      y: (rotatedCol + rotatedRow) * ISO_VIEW.tileHeight / 2,
+    };
+  };
+  const corners = [
+    raw(-0.5, -0.5),
+    raw(ISO_VIEW.columns - 0.5, -0.5),
+    raw(ISO_VIEW.columns - 0.5, ISO_VIEW.rows - 0.5),
+    raw(-0.5, ISO_VIEW.rows - 0.5),
+  ];
+  const minX = Math.min(...corners.map(point => point.x));
+  const maxX = Math.max(...corners.map(point => point.x));
+  const minY = Math.min(...corners.map(point => point.y));
+  const maxY = Math.max(...corners.map(point => point.y));
+  const scale = Math.min(
+    (LOGICAL_SIZE.width - 42) / (maxX - minX),
+    (LOGICAL_SIZE.height - 48) / (maxY - minY + ISO_VIEW.wallHeight + ISO_VIEW.edgeDepth),
+  );
+  const originX = LOGICAL_SIZE.width / 2 - ((minX + maxX) / 2) * scale;
+  const originY = LOGICAL_SIZE.height / 2 - ((minY + maxY) / 2) * scale
+    + ((ISO_VIEW.wallHeight - ISO_VIEW.edgeDepth) / 2) * scale;
+  const project = (col, row) => {
+    const point = raw(col, row);
+    return { x: originX + point.x * scale, y: originY + point.y * scale };
+  };
+  project.scale = scale;
+  project.rotation = ((rotationDegrees % 360) + 360) % 360;
+  return project;
+}
+
 export const PALETTE = Object.freeze({
   space: "#0b0e0d",
   frame: "#7958d8",
@@ -83,7 +125,6 @@ const doorwayPairs = [
   [{ col: 14, row: 3 }, { col: 14, row: 4 }],
   [{ col: 4, row: 5 }, { col: 4, row: 6 }],
   [{ col: 13, row: 5 }, { col: 13, row: 6 }],
-  [{ col: 8, row: 3 }, { col: 8, row: 4 }],
   [{ col: 8, row: 5 }, { col: 8, row: 6 }],
   [{ col: 6, row: 4 }, { col: 7, row: 4 }],
   [{ col: 10, row: 4 }, { col: 11, row: 4 }],
@@ -91,12 +132,23 @@ const doorwayPairs = [
   [{ col: 10, row: 5 }, { col: 11, row: 5 }],
 ];
 export const DOORWAY_EDGES = new Set(doorwayPairs.map(([first, second]) => edgeKey(first, second)));
+export const DOORWAYS = Object.freeze(doorwayPairs.map(([first, second]) => {
+  if (first.col !== second.col) {
+    const col = (first.col + second.col) / 2;
+    const row = (first.row + second.row) / 2;
+    return { start: { col, row: row - 0.5 }, end: { col, row: row + 0.5 } };
+  }
+  const col = (first.col + second.col) / 2;
+  const row = (first.row + second.row) / 2;
+  return { start: { col: col - 0.5, row }, end: { col: col + 0.5, row } };
+}));
 
 function station(room, col, row, label, workerStationId = null, workerCell = null, kind = "terminal") {
   const position = projectIso(col, row);
   return {
     id: room,
     room,
+    selectionId: room === "dispatch" ? "settings" : room,
     label,
     kind,
     cell: { col, row },
@@ -126,13 +178,13 @@ export const STATIONS = Object.freeze([
   station("dispatch", 8, 4, "QUEUE ROUTER", "dispatch-01", { col: 8, row: 5 }, "console"),
 ]);
 
-export function findStationAt(x, y) {
-  return [...STATIONS].reverse().find(item => (
-    x >= item.bounds.left
-    && x <= item.bounds.left + item.bounds.width
-    && y >= item.bounds.top
-    && y <= item.bounds.top + item.bounds.height
-  )) || null;
+export function findStationAt(x, y, project = projectIso) {
+  return [...STATIONS].reverse().find(item => {
+    const position = project(item.cell.col, item.cell.row);
+    const radius = 13 * (project.scale || 1);
+    return x >= position.x - radius && x <= position.x + radius
+      && y >= position.y - 15 * (project.scale || 1) && y <= position.y + 11 * (project.scale || 1);
+  }) || null;
 }
 
 export const WORKER_STATIONS = Object.freeze(Object.fromEntries(
@@ -163,9 +215,22 @@ const BODY_SPRITE = Object.freeze([
   "KK.......KK",
 ]);
 
+function addFinePixels(sprite) {
+  return Object.freeze(sprite.flatMap((row, rowIndex) => [0, 1].map(yPart => (
+    [...row].flatMap((symbol, columnIndex) => [0, 1].map(xPart => {
+      if (symbol === ".") return ".";
+      if (symbol === "T" && yPart === 0 && xPart === 1 && (rowIndex + columnIndex) % 3 === 0) return "t";
+      if (symbol === "J" && yPart === 1 && xPart === 0 && columnIndex % 3 === 0) return "j";
+      if (symbol === "S" && yPart === 0 && xPart === 1 && columnIndex % 2 === 0) return "s";
+      return symbol;
+    })).join("")
+  ))));
+}
+const DETAILED_BODY_SPRITE = addFinePixels(BODY_SPRITE);
+
 function workerAppearance(color, stationId, waitCell, gear) {
   const wait = projectIso(waitCell.col, waitCell.row);
-  return { color, stationId, wait: { x: wait.x, y: wait.y + 2 }, waitCell, gear, sprite: BODY_SPRITE };
+  return { color, stationId, wait: { x: wait.x, y: wait.y + 2 }, waitCell, gear, sprite: DETAILED_BODY_SPRITE };
 }
 
 export const WORKER_APPEARANCE = Object.freeze({
@@ -188,6 +253,9 @@ export const SPRITE_COLORS = Object.freeze({
   B: "#534333",
   P: "#414846",
   K: "#272a27",
+  t: "#929274",
+  j: "#4d5947",
+  s: "#e3b18b",
   ".": null,
 });
 

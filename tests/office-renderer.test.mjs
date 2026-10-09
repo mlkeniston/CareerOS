@@ -7,10 +7,11 @@ const rendererSource = await readFile(new URL("../src/careeros/static/office-ren
 const layoutUrl = `data:text/javascript;base64,${Buffer.from(layoutSource).toString("base64")}`;
 const rendererModule = rendererSource.replace('from "./office-layout.js"', `from "${layoutUrl}"`);
 const { OfficeRenderer } = await import(`data:text/javascript;base64,${Buffer.from(rendererModule).toString("base64")}`);
-const { FLOOR_CELLS } = await import(layoutUrl);
+const { FLOOR_CELLS, STATIONS } = await import(layoutUrl);
 
-test("isometric renderer fills every floor tile while drawing the office", () => {
+function canvasHarness() {
   const filledStyles = [];
+  const listeners = new Map();
   let context;
   context = new Proxy({
     createRadialGradient: () => ({ addColorStop() {} }),
@@ -32,9 +33,15 @@ test("isometric renderer fills every floor tile while drawing the office", () =>
     style: {},
     getContext: () => context,
     getBoundingClientRect: () => ({ width: 600, height: 338, left: 0, top: 0 }),
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: name => listeners.delete(name),
+    setPointerCapture() {},
+    releasePointerCapture() {},
   };
+  return { canvas, filledStyles, listeners };
+}
+
+function withReducedMotion(callback) {
   const previousWindow = globalThis.window;
   globalThis.window = {
     devicePixelRatio: 1,
@@ -42,16 +49,78 @@ test("isometric renderer fills every floor tile while drawing the office", () =>
     addEventListener() {},
     removeEventListener() {},
   };
-
   try {
-    new OfficeRenderer(canvas).update({ workers: [], counts: {} });
+    return callback();
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+}
 
-  const floorMaterials = new Set(FLOOR_CELLS.map(cell => cell.material));
-  const filledFloorTiles = filledStyles.filter(color => floorMaterials.has(color)).length;
-  assert.ok(filledFloorTiles >= FLOOR_CELLS.length * 0.7,
-    `expected visible filled floor tiles for the whole isometric map; got ${filledFloorTiles} of ${FLOOR_CELLS.length}`);
+test("isometric renderer fills every floor tile while drawing the office", () => {
+  withReducedMotion(() => {
+    const { canvas, filledStyles } = canvasHarness();
+    new OfficeRenderer(canvas).update({ workers: [], counts: {} });
+    const floorMaterials = new Set(FLOOR_CELLS.map(cell => cell.material));
+    const filledFloorTiles = filledStyles.filter(color => floorMaterials.has(color)).length;
+    assert.ok(filledFloorTiles >= FLOOR_CELLS.length * 0.7,
+      `expected visible filled floor tiles for the whole isometric map; got ${filledFloorTiles} of ${FLOOR_CELLS.length}`);
+  });
+});
+
+test("dragging orbits the office and Dispatch opens the Planner inspector", () => {
+  withReducedMotion(() => {
+    const { canvas, listeners } = canvasHarness();
+    const selections = [];
+    const viewChanges = [];
+    const renderer = new OfficeRenderer(canvas, {
+      onSelect: selection => selections.push(selection),
+      onViewChange: degrees => viewChanges.push(degrees),
+    });
+    const dispatch = STATIONS.find(item => item.room === "dispatch");
+    const point = renderer.project(dispatch.cell.col, dispatch.cell.row);
+    renderer.selectAt({ clientX: point.x, clientY: point.y });
+    assert.deepEqual(selections.at(-1), { type: "station", id: "settings" });
+
+    renderer.setRotation(73);
+    const rotatedPoint = renderer.project(dispatch.cell.col, dispatch.cell.row);
+    renderer.selectAt({ clientX: rotatedPoint.x, clientY: rotatedPoint.y });
+    assert.deepEqual(selections.at(-1), { type: "station", id: "settings" }, "desk hit areas should follow the orbiting camera");
+
+    listeners.get("pointerdown")({ button: 0, clientX: 180, clientY: 160, pointerId: 1 });
+    listeners.get("pointermove")({ clientX: 300, clientY: 162, pointerId: 1 });
+    listeners.get("pointerup")({ pointerId: 1 });
+
+    assert.ok(viewChanges.some(degrees => degrees !== 73), "a horizontal drag should change the camera angle");
+    assert.equal(renderer.drag, null, "pointer release should finish the orbit gesture");
+    const selectionsAfterOrbit = selections.length;
+    renderer.selectAt({ clientX: rotatedPoint.x, clientY: rotatedPoint.y });
+    assert.equal(selections.length, selectionsAfterOrbit, "the orbit gesture should not accidentally select a room");
+    renderer.destroy();
+  });
+});
+
+test("pointer cancellation preserves the next click and arrow keys orbit the office", () => {
+  withReducedMotion(() => {
+    const { canvas, listeners } = canvasHarness();
+    const selections = [];
+    const renderer = new OfficeRenderer(canvas, { onSelect: selection => selections.push(selection) });
+    const dispatch = STATIONS.find(item => item.room === "dispatch");
+    let prevented = false;
+
+    listeners.get("pointerdown")({ button: 0, clientX: 100, clientY: 150, pointerId: 2 });
+    listeners.get("pointermove")({ clientX: 160, clientY: 150, pointerId: 2 });
+    listeners.get("pointercancel")({ pointerId: 2 });
+    const point = renderer.project(dispatch.cell.col, dispatch.cell.row);
+    renderer.selectAt({ clientX: point.x, clientY: point.y });
+    assert.deepEqual(selections.at(-1), { type: "station", id: "settings" }, "cancel should not swallow a later click");
+
+    const angleBeforeKey = renderer.rotation;
+    listeners.get("keydown")({ key: "ArrowRight", preventDefault: () => { prevented = true; } });
+    assert.ok(Math.abs(renderer.rotation - angleBeforeKey - 15) < 0.01, "right arrow should rotate the camera by one step");
+    assert.equal(prevented, true, "camera keys should not scroll the page");
+    listeners.get("keydown")({ key: "Home", preventDefault() {} });
+    assert.equal(renderer.rotation, 0, "Home should restore the starting angle");
+    renderer.destroy();
+  });
 });

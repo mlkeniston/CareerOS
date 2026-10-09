@@ -1,7 +1,7 @@
 # CareerOS Office Autopilot Design
 
 **Date:** 2026-10-09  
-**Status:** Awaiting user review  
+**Status:** Approved
 **Supersedes:** The home-screen and user-triggered workflow portions of `2026-10-09-careeros-mvp-design.md`  
 **Target:** Existing local-first CareerOS MVP on a 2020 M1 Mac with 8 GB RAM
 
@@ -17,7 +17,7 @@ Ollama stays the default and the only planner available to unattended work. Open
 
 The supplied 2:36 recording shows the office interface at the beginning and again near 2:10. Much of the middle shows a separate model-ranking page; that page is not part of the target office UI.
 
-The office has a fixed worker roster at the left, with colored names, status, and elapsed task time. A large top-down map fills the remaining area. It depicts connected rectangular station rooms floating in a starfield, with dark gridded floors, metallic walls, corridors, hazard-marked doorways, named workstations, and small counters that appear to report runs and shipped work. Tiny colorful pixel workers occupy the rooms around desks and consoles. The outer frame is nearly black with thin red/coral rules; cyan, green, and amber lights distinguish station states, and a purple nebula sits behind the station.
+The reference depicts connected station rooms floating in a starfield, with gridded floors, metallic walls, corridors, hazard-marked doorways, named workstations, and pixel workers. The approved CareerOS treatment uses an angled isometric map with worn concrete and steel, dusty Fallout-era texture, and restrained neon cyan, green, amber, purple, and coral state lights. The office fills the first screen; the worker roster and details open on demand.
 
 The map communicates presence and location; the roster communicates identity and current activity; station labels and counters communicate work and output. The recording is handheld and soft, so exact station names, counts, and animation states are not treated as requirements.
 
@@ -31,11 +31,11 @@ The map communicates presence and location; the roster communicates identity and
 
 ### 1. The office is the home screen
 
-Replace the cream card layout and static cozy studio drawing with a dark, full-window operations view inspired by the reference. On a desktop, a narrow left roster sits beside a dominant map canvas. The map is top-down and modular: four connected department rooms, short corridors, repeated desks or consoles, readable doorway labels, and a central dispatch area. The background uses sparse stars and a restrained purple nebula. Metallic charcoal room tiles, silver walls, hazard accents, red frame lines, and small cyan/green/amber status lights establish the visual language.
+Replace the cream card layout and static cozy studio drawing with a dark, full-window operations view inspired by the reference. A dominant Canvas map depicts six connected room footprints for Jobs, Resume, Applications, Engineering, LinkedIn Outreach, and Dispatch. Use an angled isometric camera, diamond floor tiles, raised worn-steel and concrete walls, scratched surfaces, cables, equipment, hazard marks, and small signs. Pixel workers use a finer sprite grid for readable face, uniform, and team details. Neon status accents retain the established cyan, green, amber, purple, and coral palette.
 
 The four rooms represent Job Hunters, Resume Team, Application Team, and Engineering Team. A small manager/dispatch station coordinates their queue. Each room has several named stations so a user can see both the team's purpose and where a task is assigned. A compact bottom strip shows live counts such as jobs found, work completed, drafts awaiting review, and the current local model state.
 
-Keep job search, application review, resume editing, portfolio proposals, and settings as reachable station views. Selecting a worker or desk opens a compact HTML task inspector with its task, status, result or error, and relevant next action. Keyboard-accessible roster buttons provide the same selection path as clicking a sprite or room.
+Keep job search, application review, resume editing, portfolio proposals, and settings as reachable station views. Selecting a worker or desk opens a compact HTML task inspector with its task, status, result or error, and relevant next action. Keyboard-accessible roster buttons provide the same selection path as clicking a sprite or room. Dragging horizontally orbits the isometric camera through a full turn; the room geometry, station positions, worker positions, and hit areas reproject together and auto-fit the canvas. A reset control restores the initial view.
 
 ### 2. Pixel workers reflect real queue state
 
@@ -57,12 +57,13 @@ Unattended tasks always use the local planner, never OpenAI. An explicit OpenAI 
 
 Retain FastAPI, SQLite, the existing task queue, and the current domain services. Add a scheduler that inserts idempotent discovery work into the persistent queue, plus handlers for discovery and any safely bounded market-driven portfolio proposals. Expose a read-only workspace snapshot API containing department/worker identity, assigned station, queue-derived status and elapsed time, recent real tasks, activity counts, model readiness, and autopilot state. Add a pause/resume control that changes the persisted scheduler setting.
 
-The Canvas renders a stable map from static room/station definitions and renders live worker positions from the workspace snapshot. The HTML shell renders the roster and task inspector from the same response. Poll the snapshot at a modest interval; animate movement locally between server-provided states. The renderer must not fabricate task completion or metrics.
+The Canvas renders static room/station definitions and live worker positions from the workspace snapshot. Camera rotation reprojects map geometry and interactive targets from their grid coordinates. The HTML shell renders the roster and task inspector from the same response. Poll the snapshot at a modest interval; animate movement locally between server-provided states. The renderer must not fabricate task completion or metrics.
 
 ## Acceptance criteria
 
-- The first screen after launch is a dark, top-down pixel office, not a form or a static illustration card.
-- The office has four labeled departments, connected rooms/corridors, a left worker roster, per-station activity, and a compact operations strip.
+- The first screen after launch is a dark, richly detailed isometric pixel office, not a form or a static illustration card.
+- The office has six labeled work areas, connected rooms/corridors, on-demand worker details, per-station activity, and a compact neon interface.
+- Dragging the office orbits through a full 360-degree turn while keeping room geometry, workers, and clickable stations aligned; reset returns to the initial camera view.
 - Pixel characters visibly work or wait at stations. Their state and counters agree with real queue records and do not claim that queued work is running.
 - First-run discovery starts without a manually entered task; scheduled scans persist across restarts and do not duplicate.
 - Public job discovery works without a resume, profile, Ollama, OpenAI key, or job-board credentials. Personalization becomes more specific when the user has supplied relevant materials, without blocking initial use.

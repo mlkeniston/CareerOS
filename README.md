@@ -10,7 +10,7 @@ CareerOS is a local-first workspace for finding technology internships and jobs,
 - Automatically prepare LinkedIn connection notes and follow-up drafts for matching roles when a profile and resume are saved. Edit and approve them before copying.
 - Give the portfolio worker a project brief, inspect its proposed files and diffs, approve them, then apply them inside the managed portfolio folder.
 - Keep a persistent SQLite task queue and recover local work after restart.
-- See queue-backed workers moving through a full-screen, top-down pixel-art office. Hover over a worker for its task, status, timing, and task ID; click for more detail.
+- See queue-backed workers moving through a full-screen, isometric pixel-art office. Drag the scene or use the arrow keys to orbit; press Home or RESET to return to the starting view. Hover over a worker for its task, status, timing, and task ID; click for more detail.
 - Start unattended local job discovery automatically and repeat every six hours while CareerOS is running.
 
 ## Requirements
@@ -56,7 +56,7 @@ The first start creates `data/careeros.sqlite3`. Back up the `data/` folder to p
 
 When CareerOS starts, the office worker queues a public listing scan automatically. It repeats every six hours while the app is open. Discovery reads the configured public job feeds and stores results in the local database; it does not need your profile, resume, API key, or search terms. The default Arbeitnow feed is included. Optional Greenhouse and Lever boards can be added below.
 
-The office shows each worker's actual queue state. Hover over a worker for its current task and status, or select a worker or room for more detail. Use **AUTO ON** to pause future scans; work already queued is allowed to finish. Closing CareerOS stops the worker; the next scan runs after you reopen it if six hours have elapsed. The saved schedule prevents duplicate scans when the app restarts.
+The office shows each worker's actual queue state. Drag the scene left or right, or focus the canvas and use the arrow keys, to orbit around the isometric map; **Home** or **RESET** restores the original view. Hover over a worker for its current task and status, or select a worker or room for more detail. Use **AUTO ON** to pause future scans; work already queued is allowed to finish. Closing CareerOS stops the worker; the next scan runs after you reopen it if six hours have elapsed. The saved schedule prevents duplicate scans when the app restarts.
 
 Job discovery works without Ollama. To let CareerOS prepare a matching application draft automatically, save target roles and at least one resume version in Resume Team, then keep the configured local Ollama model available. A prepared application stays in Draft review until you inspect and approve it. CareerOS never submits an application. If Ollama is unavailable, discovery continues and the office shows the affected task state.
 

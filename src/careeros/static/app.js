@@ -6,8 +6,13 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 const officeRenderer = new OfficeRenderer($("#office-canvas"), {
   onSelect: selection => selectOffice(selection),
   onHover: (workerId, position) => renderWorkerTooltip(workerId, position),
+  onViewChange: degrees => {
+    const angle = $("#office-view-angle");
+    if (angle) angle.textContent = `${String(Math.round(degrees) % 360).padStart(3, "0")}°`;
+  },
 });
 officeRenderer.update({ workers: [], counts: {} });
+$("#office-reset-view").addEventListener("click", () => officeRenderer.setRotation(0));
 let officePollTimer = null;
 let officeRefreshing = false;
 window.addEventListener("pagehide", () => {

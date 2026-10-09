@@ -1,4 +1,5 @@
 import {
+  DOORWAYS,
   DOORWAY_EDGES,
   FLOOR_CELLS,
   ISO_VIEW,
@@ -9,18 +10,22 @@ import {
   SPRITE_COLORS,
   STATIONS,
   WORKER_APPEARANCE,
-  WORKER_STATIONS,
+  createIsoProjector,
   findStationAt,
-  projectIso,
 } from "./office-layout.js";
 
 export class OfficeRenderer {
-  constructor(canvas, { onSelect = () => {}, onHover = () => {} } = {}) {
+  constructor(canvas, { onSelect = () => {}, onHover = () => {}, onViewChange = () => {} } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d", { alpha: false });
     if (!this.ctx) throw new Error("The office canvas is not available in this browser.");
     this.onSelect = onSelect;
     this.onHover = onHover;
+    this.onViewChange = onViewChange;
+    this.rotation = 0;
+    this.project = createIsoProjector(this.rotation);
+    this.drag = null;
+    this.suppressClick = false;
     this.snapshot = null;
     this.actors = new Map();
     this.selection = null;
@@ -32,8 +37,12 @@ export class OfficeRenderer {
     this.reducedMotion = this.motionPreference.matches;
     this.handleResize = () => this.resize();
     this.handleClick = event => this.selectAt(event);
-    this.handlePointerMove = event => this.hoverAt(event);
-    this.handlePointerLeave = () => this.clearHover();
+    this.handlePointerDown = event => this.beginOrbit(event);
+    this.handlePointerMove = event => this.drag ? this.orbitTo(event) : this.hoverAt(event);
+    this.handlePointerUp = event => this.endOrbit(event);
+    this.handlePointerCancel = event => this.endOrbit(event, true);
+    this.handleKeyDown = event => this.handleOfficeKey(event);
+    this.handlePointerLeave = () => { if (!this.drag) this.clearHover(); };
     this.handleMotionChange = event => {
       this.reducedMotion = event.matches;
       this.lastFrameAt = 0;
@@ -48,14 +57,19 @@ export class OfficeRenderer {
     };
     window.addEventListener("resize", this.handleResize);
     canvas.addEventListener("click", this.handleClick);
+    canvas.addEventListener("pointerdown", this.handlePointerDown);
     canvas.addEventListener("pointermove", this.handlePointerMove);
+    canvas.addEventListener("pointerup", this.handlePointerUp);
+    canvas.addEventListener("pointercancel", this.handlePointerCancel);
     canvas.addEventListener("pointerleave", this.handlePointerLeave);
+    canvas.addEventListener("keydown", this.handleKeyDown);
     if (this.motionPreference.addEventListener) {
       this.motionPreference.addEventListener("change", this.handleMotionChange);
     } else {
       this.motionPreference.addListener(this.handleMotionChange);
     }
     this.resize();
+    this.onViewChange(this.rotation);
     this.draw(0);
     if (!this.reducedMotion) this.startAnimation();
   }
@@ -82,14 +96,60 @@ export class OfficeRenderer {
     this.draw(0);
   }
 
+  setRotation(degrees) {
+    this.rotation = ((degrees % 360) + 360) % 360;
+    this.project = createIsoProjector(this.rotation);
+    this.onViewChange(this.rotation);
+    this.draw(0);
+  }
+
+  beginOrbit(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    this.drag = { startX: event.clientX, startRotation: this.rotation, moved: false, pointerId: event.pointerId };
+    this.canvas.style.cursor = "grabbing";
+    this.hoveredWorker = null;
+    this.onHover(null, null);
+    this.canvas.setPointerCapture?.(event.pointerId);
+  }
+
+  orbitTo(event) {
+    if (!this.drag) return;
+    const distance = Math.abs(event.clientX - this.drag.startX);
+    if (distance > 3) this.drag.moved = true;
+    if (this.drag.moved) this.setRotation(this.drag.startRotation + (event.clientX - this.drag.startX) * 0.6);
+  }
+
+  endOrbit(event, cancelled = false) {
+    if (!this.drag) return;
+    const drag = this.drag;
+    this.drag = null;
+    this.suppressClick = drag.moved && !cancelled;
+    this.canvas.style.cursor = "grab";
+    this.canvas.releasePointerCapture?.(event.pointerId ?? drag.pointerId);
+  }
+
+  handleOfficeKey(event) {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      this.setRotation(this.rotation + (event.key === "ArrowRight" ? 15 : -15));
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      this.setRotation(0);
+    }
+  }
+
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
     if (this.frameId) window.cancelAnimationFrame(this.frameId);
     window.removeEventListener("resize", this.handleResize);
     this.canvas.removeEventListener("click", this.handleClick);
+    this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
     this.canvas.removeEventListener("pointermove", this.handlePointerMove);
+    this.canvas.removeEventListener("pointerup", this.handlePointerUp);
+    this.canvas.removeEventListener("pointercancel", this.handlePointerCancel);
     this.canvas.removeEventListener("pointerleave", this.handlePointerLeave);
+    this.canvas.removeEventListener("keydown", this.handleKeyDown);
     if (this.motionPreference.removeEventListener) {
       this.motionPreference.removeEventListener("change", this.handleMotionChange);
     } else {
@@ -115,12 +175,13 @@ export class OfficeRenderer {
   updateActor(worker) {
     const appearance = WORKER_APPEARANCE[worker.id];
     if (!appearance) return;
-    const station = WORKER_STATIONS[worker.station_id] || WORKER_STATIONS[appearance.stationId];
+    const station = STATIONS.find(item => item.workerStationId === worker.station_id)
+      || STATIONS.find(item => item.workerStationId === appearance.stationId);
     const isAtStation = ["working", "needs_review", "failed", "interrupted"].includes(worker.status);
-    const target = isAtStation ? station : appearance.wait;
+    const targetCell = isAtStation ? station?.workerCell : appearance.waitCell;
     let actor = this.actors.get(worker.id);
     if (!actor) {
-      actor = { id: worker.id, x: appearance.wait.x, y: appearance.wait.y };
+      actor = { id: worker.id, col: appearance.waitCell.col, row: appearance.waitCell.row };
       this.actors.set(worker.id, actor);
     }
     actor.name = worker.name || worker.id;
@@ -128,14 +189,14 @@ export class OfficeRenderer {
     actor.status = worker.status;
     actor.taskId = worker.task_id || null;
     actor.stationId = worker.station_id || appearance.stationId;
-    actor.targetX = target.x;
-    actor.targetY = target.y;
+    actor.targetCol = targetCell?.col ?? appearance.waitCell.col;
+    actor.targetRow = targetCell?.row ?? appearance.waitCell.row;
   }
 
   snapActorsToTargets() {
     for (const actor of this.actors.values()) {
-      actor.x = actor.targetX;
-      actor.y = actor.targetY;
+      actor.col = actor.targetCol;
+      actor.row = actor.targetRow;
     }
   }
 
@@ -157,17 +218,17 @@ export class OfficeRenderer {
 
   advanceActors(elapsed) {
     if (!elapsed) return;
-    const distance = 56 * (elapsed / 1000);
+    const distance = 3.2 * (elapsed / 1000);
     for (const actor of this.actors.values()) {
-      const dx = actor.targetX - actor.x;
-      const dy = actor.targetY - actor.y;
+      const dx = actor.targetCol - actor.col;
+      const dy = actor.targetRow - actor.row;
       const remaining = Math.hypot(dx, dy);
       if (remaining <= distance || remaining === 0) {
-        actor.x = actor.targetX;
-        actor.y = actor.targetY;
+        actor.col = actor.targetCol;
+        actor.row = actor.targetRow;
       } else {
-        actor.x += (dx / remaining) * distance;
-        actor.y += (dy / remaining) * distance;
+        actor.col += (dx / remaining) * distance;
+        actor.row += (dy / remaining) * distance;
       }
     }
   }
@@ -216,42 +277,89 @@ export class OfficeRenderer {
 
   drawIsoFloor() {
     const ctx = this.ctx;
-    const cells = [...FLOOR_CELLS].sort((a, b) => (a.col + a.row) - (b.col + b.row) || a.col - b.col);
+    const cells = [...FLOOR_CELLS].sort((a, b) => this.project(a.col, a.row).y - this.project(b.col, b.row).y);
     const byPosition = new Map(cells.map(cell => [`${cell.col},${cell.row}`, cell]));
     this.floorAt = byPosition;
 
     const footprint = [
-      projectIso(0, 0),
-      projectIso(ISO_VIEW.columns - 1, 0),
-      projectIso(ISO_VIEW.columns - 1, ISO_VIEW.rows - 1),
-      projectIso(0, ISO_VIEW.rows - 1),
+      this.project(-0.5, -0.5),
+      this.project(ISO_VIEW.columns - 0.5, -0.5),
+      this.project(ISO_VIEW.columns - 0.5, ISO_VIEW.rows - 0.5),
+      this.project(-0.5, ISO_VIEW.rows - 0.5),
     ];
-    drawPolygon(ctx, footprint.map(point => ({ x: point.x, y: point.y + 8 })), "rgba(0,0,0,.56)");
+    drawPolygon(ctx, footprint.map(point => ({ x: point.x, y: point.y + ISO_VIEW.edgeDepth * this.project.scale })), "rgba(0,0,0,.56)");
 
+    const backWalls = [];
+    const frontWalls = [];
+    const seenEdges = new Set();
+    const viewX = Math.cos(this.rotation * Math.PI / 180) + Math.sin(this.rotation * Math.PI / 180);
+    const viewY = Math.cos(this.rotation * Math.PI / 180) - Math.sin(this.rotation * Math.PI / 180);
     for (const cell of cells) {
-      this.drawBackWalls(cell, byPosition);
-      this.drawIsoTile(cell);
-      this.drawOuterFace(cell, byPosition, cell.col + 1, cell.row, "east");
-      this.drawOuterFace(cell, byPosition, cell.col, cell.row + 1, "south");
+      for (const edge of cellEdges(cell)) {
+        const neighbor = byPosition.get(`${cell.col + edge.neighbor.col},${cell.row + edge.neighbor.row}`);
+        if (neighbor?.zoneId === cell.zoneId || (neighbor && isDoorway(cell, {
+          col: cell.col + edge.neighbor.col,
+          row: cell.row + edge.neighbor.row,
+        }))) continue;
+        const endpoints = [edge.start, edge.end]
+          .map(point => `${point.col.toFixed(2)},${point.row.toFixed(2)}`).sort();
+        const key = endpoints.join("|");
+        if (seenEdges.has(key)) continue;
+        seenEdges.add(key);
+        const front = edge.normal.col * viewX + edge.normal.row * viewY > 0;
+        const wall = { ...edge, front, color: cell.wall || PALETTE.wall };
+        (front ? frontWalls : backWalls).push(wall);
+      }
     }
+    for (const wall of backWalls) this.drawWallSegment(wall);
+    for (const cell of cells) this.drawIsoTile(cell);
+    for (const wall of frontWalls) this.drawWallSegment(wall);
   }
 
-  drawBackWalls(cell, byPosition) {
-    const neighbors = [
-      { col: cell.col - 1, row: cell.row, edge: "west" },
-      { col: cell.col, row: cell.row - 1, edge: "north" },
-    ];
-    for (const neighbor of neighbors) {
-      const other = byPosition.get(`${neighbor.col},${neighbor.row}`);
-      if (other?.zoneId === cell.zoneId || isDoorway(cell, neighbor)) continue;
-      drawBackWall(this.ctx, projectIso(cell.col, cell.row), neighbor.edge, cell.wall || PALETTE.wall, ISO_VIEW);
+  drawWallSegment(wall) {
+    const ctx = this.ctx;
+    const start = this.project(wall.start.col, wall.start.row);
+    const end = this.project(wall.end.col, wall.end.row);
+    const wallHeight = ISO_VIEW.wallHeight * this.project.scale;
+    const edgeDepth = ISO_VIEW.edgeDepth * this.project.scale;
+    const topStart = { x: start.x, y: start.y - wallHeight };
+    const topEnd = { x: end.x, y: end.y - wallHeight };
+    drawPolygon(ctx, [start, end, topEnd, topStart], wall.front ? lighten(wall.color, -11) : wall.color);
+    ctx.strokeStyle = wall.color;
+    ctx.lineWidth = Math.max(1, this.project.scale);
+    ctx.beginPath();
+    ctx.moveTo(topStart.x, topStart.y);
+    ctx.lineTo(topEnd.x, topEnd.y);
+    ctx.stroke();
+    if (wall.front) {
+      const lowerStart = { x: start.x, y: start.y + edgeDepth };
+      const lowerEnd = { x: end.x, y: end.y + edgeDepth };
+      drawPolygon(ctx, [start, end, lowerEnd, lowerStart], "#292c27");
+      ctx.fillStyle = "rgba(183,157,109,.5)";
+      ctx.fillRect(Math.round((start.x + end.x) / 2), Math.round((start.y + end.y) / 2 + 3), 2, 1);
+      return;
     }
+    ctx.strokeStyle = "rgba(20,22,18,.82)";
+    ctx.lineWidth = Math.max(1, this.project.scale);
+    ctx.beginPath();
+    ctx.moveTo(topStart.x, topStart.y);
+    ctx.lineTo(topEnd.x, topEnd.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(207,193,151,.25)";
+    ctx.fillRect(Math.round((topStart.x + topEnd.x) / 2), Math.round((topStart.y + topEnd.y) / 2), 2, 1);
   }
 
   drawIsoTile(cell) {
     const ctx = this.ctx;
-    const center = projectIso(cell.col, cell.row);
-    const corners = isoCorners(center, ISO_VIEW.tileWidth, ISO_VIEW.tileHeight);
+    const center = this.project(cell.col, cell.row);
+    const corners = {
+      north: this.project(cell.col - 0.5, cell.row - 0.5),
+      east: this.project(cell.col + 0.5, cell.row - 0.5),
+      south: this.project(cell.col + 0.5, cell.row + 0.5),
+      west: this.project(cell.col - 0.5, cell.row + 0.5),
+    };
+    corners.polygon = [corners.north, corners.east, corners.south, corners.west];
     const grain = Math.abs((cell.col * 41 + cell.row * 67) % 5);
     ctx.fillStyle = grain === 0 ? lighten(cell.material, 5) : cell.material;
     drawPolygon(ctx, corners.polygon, ctx.fillStyle);
@@ -281,16 +389,10 @@ export class OfficeRenderer {
     }
   }
 
-  drawOuterFace(cell, byPosition, col, row, edge) {
-    if (byPosition.has(`${col},${row}`)) return;
-    const center = projectIso(cell.col, cell.row);
-    drawFrontWall(this.ctx, center, edge, cell.wall || PALETTE.wall, ISO_VIEW);
-  }
-
   drawRoomSigns() {
     const ctx = this.ctx;
     for (const room of ROOMS) {
-      const anchor = projectIso(room.grid.col + (room.grid.columns - 1) / 2, room.grid.row + 0.4);
+      const anchor = this.project(room.grid.col + (room.grid.columns - 1) / 2, room.grid.row + 0.4);
       ctx.font = "bold 5px ui-monospace, SFMono-Regular, Menlo, monospace";
       const width = Math.min(room.grid.columns * ISO_VIEW.tileWidth * 0.62, ctx.measureText(room.label).width + 9);
       const left = Math.round(anchor.x - width / 2);
@@ -309,27 +411,60 @@ export class OfficeRenderer {
     }
   }
 
+  drawGroundPrism(col, row, width, depth, height, topColor, eastColor, westColor) {
+    const halfCol = width / ISO_VIEW.tileWidth / 2;
+    const halfRow = depth / ISO_VIEW.tileHeight / 2;
+    const corners = [
+      { col: col - halfCol, row: row - halfRow },
+      { col: col + halfCol, row: row - halfRow },
+      { col: col + halfCol, row: row + halfRow },
+      { col: col - halfCol, row: row + halfRow },
+    ];
+    const base = corners.map(point => this.project(point.col, point.row));
+    const top = base.map(point => ({ x: point.x, y: point.y - height * this.project.scale }));
+    const angle = this.rotation * Math.PI / 180;
+    const viewCol = Math.cos(angle) + Math.sin(angle);
+    const viewRow = Math.cos(angle) - Math.sin(angle);
+    const faces = [
+      { from: 0, to: 1, normal: { col: 0, row: -1 }, color: westColor },
+      { from: 1, to: 2, normal: { col: 1, row: 0 }, color: eastColor },
+      { from: 2, to: 3, normal: { col: 0, row: 1 }, color: eastColor },
+      { from: 3, to: 0, normal: { col: -1, row: 0 }, color: westColor },
+    ];
+    for (const face of faces) {
+      if (face.normal.col * viewCol + face.normal.row * viewRow <= 0) continue;
+      drawPolygon(this.ctx, [top[face.from], top[face.to], base[face.to], base[face.from]], face.color);
+    }
+    drawPolygon(this.ctx, top, topColor);
+    this.ctx.strokeStyle = "rgba(20,21,17,.9)";
+    this.ctx.lineWidth = Math.max(1, this.project.scale);
+    tracePolygon(this.ctx, top);
+    this.ctx.stroke();
+    this.ctx.strokeStyle = "rgba(216,199,155,.35)";
+    this.ctx.beginPath();
+    this.ctx.moveTo(top[0].x, top[0].y);
+    this.ctx.lineTo(top[1].x, top[1].y);
+    this.ctx.stroke();
+  }
+
   drawDoorwayMarks() {
     const ctx = this.ctx;
-    const doorCells = [
-      [2, 3], [8, 3], [14, 3], [4, 6], [13, 6], [8, 4], [8, 5],
-    ];
-    for (const [col, row] of doorCells) {
-      const point = projectIso(col, row);
-      ctx.fillStyle = "#272923";
-      ctx.fillRect(point.x - 7, point.y - 2, 14, 4);
-      ctx.fillStyle = PALETTE.amber;
-      for (let stripe = -5; stripe <= 5; stripe += 5) {
-        ctx.fillRect(point.x + stripe, point.y - 2, 2, 4);
+    const width = 2.8 * this.project.scale;
+    for (const doorway of DOORWAYS) {
+      const start = this.project(doorway.start.col, doorway.start.row);
+      const end = this.project(doorway.end.col, doorway.end.row);
+      drawPolygon(ctx, segmentBand(start, end, 0, 1, width), "#272923");
+      for (const stripe of [0.12, 0.47, 0.82]) {
+        drawPolygon(ctx, segmentBand(start, end, stripe, Math.min(1, stripe + 0.12), width * 0.72), PALETTE.amber);
       }
     }
   }
 
   drawWorldObjects(timestamp) {
     const objects = [
-      ...PROPS.map(prop => ({ type: "prop", value: prop, depth: projectIso(prop.col, prop.row).y })),
-      ...STATIONS.map(station => ({ type: "station", value: station, depth: station.position.y + 4 })),
-      ...[...this.actors.values()].map(actor => ({ type: "actor", value: actor, depth: actor.y })),
+      ...PROPS.map(prop => ({ type: "prop", value: prop, depth: this.project(prop.col, prop.row).y })),
+      ...STATIONS.map(station => ({ type: "station", value: station, depth: this.project(station.cell.col, station.cell.row).y + 4 })),
+      ...[...this.actors.values()].map(actor => ({ type: "actor", value: actor, depth: this.project(actor.col, actor.row).y })),
     ].sort((a, b) => a.depth - b.depth);
     for (const item of objects) {
       if (item.type === "prop") this.drawProp(item.value);
@@ -340,18 +475,18 @@ export class OfficeRenderer {
 
   drawStation(station, timestamp) {
     const ctx = this.ctx;
-    const { x, y } = station.position;
+    const { x, y } = this.project(station.cell.col, station.cell.row);
     const room = ROOMS.find(item => item.id === station.room);
     const accent = PALETTE[room?.color || "coral"];
     const worker = station.workerStationId
       ? (this.snapshot?.workers || []).find(item => item.station_id === station.workerStationId)
       : null;
     const working = worker?.status === "working";
-    const selected = this.selection?.type === "station" && this.selection.id === station.id;
+    const selected = this.selection?.type === "station" && this.selection.id === station.selectionId;
     const signal = working && Math.floor(timestamp / 450) % 2 === 0 ? PALETTE.green : accent;
 
     drawPixelShadow(ctx, x, y + 4, 16, 4);
-    drawIsoPrism(ctx, x, y + 5, 25, 12, 6, "#817a60", "#4b4a3e", "#383a33");
+    this.drawGroundPrism(station.cell.col, station.cell.row + 0.28, 25, 12, 6, "#817a60", "#4b4a3e", "#383a33");
     ctx.fillStyle = "#262b27";
     ctx.fillRect(x - 6, y - 10, 12, 8);
     ctx.fillStyle = "#8e8767";
@@ -390,18 +525,19 @@ export class OfficeRenderer {
     if (selected) {
       ctx.strokeStyle = PALETTE.light;
       ctx.lineWidth = 1;
-      ctx.strokeRect(station.bounds.left, station.bounds.top, station.bounds.width, station.bounds.height);
+      const size = 13 * this.project.scale;
+      ctx.strokeRect(x - size, y - 15 * this.project.scale, size * 2, size * 2);
     }
   }
 
   drawProp(prop) {
     const ctx = this.ctx;
-    const point = projectIso(prop.col, prop.row);
+    const point = this.project(prop.col, prop.row);
     drawPixelShadow(ctx, point.x, point.y + 2, 10, 3);
     if (prop.kind === "crate" || prop.kind === "toolbox" || prop.kind === "filebox") {
       const toolbox = prop.kind === "toolbox";
       const filebox = prop.kind === "filebox";
-      drawIsoPrism(ctx, point.x, point.y + 1, 13, 10, toolbox ? 6 : 8,
+      this.drawGroundPrism(prop.col, prop.row + 0.12, 13, 10, toolbox ? 6 : 8,
         filebox ? "#a58d68" : toolbox ? "#68715b" : "#80543b", "#4b4031", "#35342b");
       ctx.fillStyle = toolbox ? PALETTE.amber : "#bd9863";
       ctx.fillRect(point.x - 2, point.y - 4, 4, 1);
@@ -414,7 +550,7 @@ export class OfficeRenderer {
       return;
     }
     if (["locker", "filecabinet", "shelf"].includes(prop.kind)) {
-      drawIsoPrism(ctx, point.x, point.y + 2, 13, 10, prop.kind === "shelf" ? 19 : 23,
+      this.drawGroundPrism(prop.col, prop.row + 0.12, 13, 10, prop.kind === "shelf" ? 19 : 23,
         prop.kind === "locker" ? "#74725e" : "#82765a", "#514d3d", "#3a3a31");
       ctx.fillStyle = "#a79a75";
       ctx.fillRect(point.x - 3, point.y - 14, 1, 7);
@@ -426,7 +562,7 @@ export class OfficeRenderer {
       return;
     }
     if (prop.kind === "lamp" || prop.kind === "antenna") {
-      drawIsoPrism(ctx, point.x, point.y + 2, 11, 8, 5, "#6b634a", "#403d32", "#30332c");
+      this.drawGroundPrism(prop.col, prop.row + 0.12, 11, 8, 5, "#6b634a", "#403d32", "#30332c");
       ctx.fillStyle = "#4c5147";
       ctx.fillRect(point.x - 1, point.y - 13, 2, 14);
       ctx.fillRect(point.x - 5, point.y - 14, 10, 2);
@@ -438,7 +574,7 @@ export class OfficeRenderer {
       return;
     }
     if (prop.kind === "radio") {
-      drawIsoPrism(ctx, point.x, point.y + 2, 12, 8, 9, "#606650", "#3c4239", "#2d342f");
+      this.drawGroundPrism(prop.col, prop.row + 0.12, 12, 8, 9, "#606650", "#3c4239", "#2d342f");
       ctx.fillStyle = PALETTE.coral;
       ctx.fillRect(point.x - 2, point.y - 5, 2, 2);
       ctx.fillStyle = PALETTE.cyan;
@@ -446,7 +582,7 @@ export class OfficeRenderer {
       return;
     }
     if (prop.kind === "cactus") {
-      drawIsoPrism(ctx, point.x, point.y + 2, 9, 7, 5, "#936b4c", "#514234", "#36332a");
+      this.drawGroundPrism(prop.col, prop.row + 0.12, 9, 7, 5, "#936b4c", "#514234", "#36332a");
       ctx.fillStyle = "#758358";
       ctx.fillRect(point.x - 1, point.y - 9, 3, 9);
       ctx.fillRect(point.x - 4, point.y - 6, 3, 2);
@@ -468,7 +604,7 @@ export class OfficeRenderer {
     };
     const ctx = this.ctx;
     for (const room of ROOMS) {
-      const point = projectIso(room.grid.col + room.grid.columns - 0.5, room.grid.row + room.grid.rows - 0.5);
+      const point = this.project(room.grid.col + room.grid.columns - 0.5, room.grid.row + room.grid.rows - 0.5);
       ctx.font = "4px ui-monospace, SFMono-Regular, Menlo, monospace";
       ctx.textBaseline = "top";
       ctx.textAlign = "center";
@@ -481,16 +617,22 @@ export class OfficeRenderer {
   drawActor(actor, timestamp) {
     const appearance = WORKER_APPEARANCE[actor.id];
     const sprite = appearance.sprite;
-    const scale = 2;
-    const width = sprite[0].length * scale;
-    const height = sprite.length * scale;
-    const x = Math.round(actor.x - width / 2);
-    const y = Math.round(actor.y - height);
-    actor.bounds = { x, y, width, height };
-    const moving = Math.hypot(actor.targetX - actor.x, actor.targetY - actor.y) > 0.75;
+    const pixelScale = this.project.scale;
+    const width = sprite[0].length;
+    const height = sprite.length;
+    const point = this.project(actor.col, actor.row);
+    const x = Math.round(point.x - width * pixelScale / 2);
+    const y = Math.round(point.y - height * pixelScale);
+    const screenWidth = width * pixelScale;
+    const screenHeight = height * pixelScale;
+    actor.bounds = { x, y, width: screenWidth, height: screenHeight };
+    const moving = Math.hypot(actor.targetCol - actor.col, actor.targetRow - actor.row) > 0.03;
     const working = actor.status === "working";
     const step = Math.floor(timestamp / 170) % 2;
-    drawPixelShadow(this.ctx, actor.x, actor.y + 1, 8, 3);
+    drawPixelShadow(this.ctx, point.x, point.y + 1, 12 * pixelScale, 3 * pixelScale);
+    this.ctx.save();
+    this.ctx.translate(x, y);
+    this.ctx.scale(pixelScale, pixelScale);
     for (let row = 0; row < sprite.length; row += 1) {
       for (let column = 0; column < sprite[row].length; column += 1) {
         const symbol = sprite[row][column];
@@ -499,24 +641,25 @@ export class OfficeRenderer {
         if (symbol === "A") color = actor.color;
         if (moving && symbol === "K" && (column + step) % 2 === 0) continue;
         this.ctx.fillStyle = color;
-        this.ctx.fillRect(x + column * scale, y + row * scale, scale, scale);
+        this.ctx.fillRect(column, row, 1, 1);
       }
     }
-    this.drawWorkerGear(appearance.gear, x, y, width, timestamp);
+    this.drawWorkerGear(appearance.gear, 0, 0, width, timestamp);
     if (working) {
       const blink = Math.floor(timestamp / 400) % 2 === 0;
       this.ctx.fillStyle = blink ? PALETTE.green : PALETTE.amber;
-      this.ctx.fillRect(Math.round(x + width - 2), Math.round(y + 19 + step), 3, 2);
+      this.ctx.fillRect(width - 3, 21 + step, 3, 2);
       this.ctx.fillStyle = blink ? PALETTE.green : PALETTE.light;
-      this.ctx.fillRect(Math.round(actor.x + 9), Math.round(y - 4), 3, 3);
+      this.ctx.fillRect(width / 2 + 8, -4, 3, 3);
     } else if (actor.status === "needs_review") {
       this.ctx.fillStyle = PALETTE.amber;
-      this.ctx.fillRect(Math.round(actor.x + 9), Math.round(y - 4), 3, 3);
+      this.ctx.fillRect(width / 2 + 8, -4, 3, 3);
     }
+    this.ctx.restore();
     if (this.selection?.type === "worker" && this.selection.id === actor.id) {
       this.ctx.strokeStyle = PALETTE.light;
       this.ctx.lineWidth = 1;
-      this.ctx.strokeRect(x - 3.5, y - 3.5, width + 7, height + 7);
+      this.ctx.strokeRect(x - 3.5, y - 3.5, screenWidth + 7, screenHeight + 7);
     }
   }
 
@@ -573,6 +716,10 @@ export class OfficeRenderer {
   }
 
   selectAt(event) {
+    if (this.suppressClick) {
+      this.suppressClick = false;
+      return;
+    }
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const x = (event.clientX - rect.left) * LOGICAL_SIZE.width / rect.width;
@@ -586,9 +733,9 @@ export class OfficeRenderer {
       this.draw(0);
       return;
     }
-    const station = findStationAt(x, y);
+    const station = findStationAt(x, y, this.project);
     if (station) {
-      this.selection = { type: "station", id: station.id };
+      this.selection = { type: "station", id: station.selectionId };
       this.onSelect(this.selection);
       this.draw(0);
     }
@@ -602,14 +749,14 @@ export class OfficeRenderer {
     const actor = this.actorAtPoint(x, y);
     this.hoveredWorker = actor?.id || null;
     this.hoverPosition = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    this.canvas.style.cursor = actor ? "pointer" : "crosshair";
+    this.canvas.style.cursor = actor ? "pointer" : "grab";
     this.onHover(this.hoveredWorker, this.hoverPosition);
   }
 
   clearHover() {
     this.hoveredWorker = null;
     this.hoverPosition = null;
-    this.canvas.style.cursor = "crosshair";
+    this.canvas.style.cursor = "grab";
     this.onHover(null, null);
   }
 
@@ -629,12 +776,14 @@ function isDoorway(first, second) {
   return DOORWAY_EDGES.has(cells.join("|"));
 }
 
-function isoCorners(center, width, height) {
-  const north = { x: center.x, y: center.y - height / 2 };
-  const east = { x: center.x + width / 2, y: center.y };
-  const south = { x: center.x, y: center.y + height / 2 };
-  const west = { x: center.x - width / 2, y: center.y };
-  return { north, east, south, west, polygon: [north, east, south, west] };
+function cellEdges(cell) {
+  const { col, row } = cell;
+  return [
+    { start: { col: col - 0.5, row: row - 0.5 }, end: { col: col + 0.5, row: row - 0.5 }, neighbor: { col: 0, row: -1 }, normal: { col: 0, row: -1 } },
+    { start: { col: col + 0.5, row: row - 0.5 }, end: { col: col + 0.5, row: row + 0.5 }, neighbor: { col: 1, row: 0 }, normal: { col: 1, row: 0 } },
+    { start: { col: col + 0.5, row: row + 0.5 }, end: { col: col - 0.5, row: row + 0.5 }, neighbor: { col: 0, row: 1 }, normal: { col: 0, row: 1 } },
+    { start: { col: col - 0.5, row: row + 0.5 }, end: { col: col - 0.5, row: row - 0.5 }, neighbor: { col: -1, row: 0 }, normal: { col: -1, row: 0 } },
+  ];
 }
 
 function drawPolygon(ctx, points, color) {
@@ -649,68 +798,29 @@ function drawPolygon(ctx, points, color) {
   }
 }
 
+function segmentBand(start, end, from, to, halfWidth) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (!length) return [];
+  const nx = -dy / length * halfWidth;
+  const ny = dx / length * halfWidth;
+  const first = { x: start.x + dx * from, y: start.y + dy * from };
+  const second = { x: start.x + dx * to, y: start.y + dy * to };
+  return [
+    { x: first.x + nx, y: first.y + ny },
+    { x: second.x + nx, y: second.y + ny },
+    { x: second.x - nx, y: second.y - ny },
+    { x: first.x - nx, y: first.y - ny },
+  ];
+}
+
 function tracePolygon(ctx, points) {
   if (!points?.length) return;
   ctx.beginPath();
   ctx.moveTo(points[0].x, points[0].y);
   for (let index = 1; index < points.length; index += 1) ctx.lineTo(points[index].x, points[index].y);
   ctx.closePath();
-}
-
-function drawBackWall(ctx, center, edge, color, view) {
-  const corners = isoCorners(center, view.tileWidth, view.tileHeight);
-  const [start, end] = edge === "west"
-    ? [corners.west, corners.north]
-    : [corners.north, corners.east];
-  const upperStart = { x: start.x, y: start.y - view.wallHeight };
-  const upperEnd = { x: end.x, y: end.y - view.wallHeight };
-  drawPolygon(ctx, [start, end, upperEnd, upperStart], color);
-  ctx.strokeStyle = "rgba(20,22,18,.82)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(upperStart.x, upperStart.y);
-  ctx.lineTo(upperEnd.x, upperEnd.y);
-  ctx.lineTo(end.x, end.y);
-  ctx.stroke();
-  ctx.fillStyle = "rgba(207,193,151,.25)";
-  ctx.fillRect(Math.round((upperStart.x + upperEnd.x) / 2), Math.round((upperStart.y + upperEnd.y) / 2), 2, 1);
-  ctx.fillStyle = "rgba(21,24,20,.55)";
-  ctx.fillRect(Math.round((start.x + end.x) / 2), Math.round((start.y + end.y) / 2 - 5), 1, 3);
-}
-
-function drawFrontWall(ctx, center, edge, color, view) {
-  const corners = isoCorners(center, view.tileWidth, view.tileHeight);
-  const [start, end] = edge === "east"
-    ? [corners.east, corners.south]
-    : [corners.west, corners.south];
-  const lowerStart = { x: start.x, y: start.y + view.edgeDepth };
-  const lowerEnd = { x: end.x, y: end.y + view.edgeDepth };
-  drawPolygon(ctx, [start, end, lowerEnd, lowerStart], "#292c27");
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(start.x, start.y + 1);
-  ctx.lineTo(end.x, end.y + 1);
-  ctx.stroke();
-  ctx.fillStyle = "rgba(183,157,109,.42)";
-  ctx.fillRect(Math.round((start.x + end.x) / 2), Math.round((start.y + end.y) / 2 + 3), 2, 1);
-}
-
-function drawIsoPrism(ctx, x, baseY, width, depth, height, topColor, eastColor, westColor) {
-  const top = isoCorners({ x, y: baseY - height }, width, depth);
-  const base = isoCorners({ x, y: baseY }, width, depth);
-  drawPolygon(ctx, [top.east, top.south, base.south, base.east], eastColor);
-  drawPolygon(ctx, [top.west, top.south, base.south, base.west], westColor);
-  drawPolygon(ctx, top.polygon, topColor);
-  ctx.strokeStyle = "rgba(20,21,17,.9)";
-  ctx.lineWidth = 1;
-  tracePolygon(ctx, top.polygon);
-  ctx.stroke();
-  ctx.strokeStyle = "rgba(216,199,155,.35)";
-  ctx.beginPath();
-  ctx.moveTo(top.north.x, top.north.y);
-  ctx.lineTo(top.east.x, top.east.y);
-  ctx.stroke();
 }
 
 function drawPixelShadow(ctx, x, y, width, depth) {
@@ -723,9 +833,9 @@ function drawPixelShadow(ctx, x, y, width, depth) {
 
 function lighten(hex, amount) {
   const value = Number.parseInt(hex.slice(1), 16);
-  const red = Math.min(255, ((value >> 16) & 255) + amount);
-  const green = Math.min(255, ((value >> 8) & 255) + amount);
-  const blue = Math.min(255, (value & 255) + amount);
+  const red = Math.max(0, Math.min(255, ((value >> 16) & 255) + amount));
+  const green = Math.max(0, Math.min(255, ((value >> 8) & 255) + amount));
+  const blue = Math.max(0, Math.min(255, (value & 255) + amount));
   return `rgb(${red}, ${green}, ${blue})`;
 }
 
