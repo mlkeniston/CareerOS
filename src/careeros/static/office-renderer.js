@@ -331,6 +331,15 @@ export class OfficeRenderer {
     ctx.moveTo(topStart.x, topStart.y);
     ctx.lineTo(topEnd.x, topEnd.y);
     ctx.stroke();
+    const fasteners = [0.18, 0.82];
+    for (const fraction of fasteners) {
+      const x = Math.round(start.x + (end.x - start.x) * fraction);
+      const y = Math.round(start.y + (end.y - start.y) * fraction - wallHeight * 0.68);
+      ctx.fillStyle = "rgba(26,29,25,.8)";
+      ctx.fillRect(x, y, 2, 2);
+      ctx.fillStyle = "rgba(204,190,150,.48)";
+      ctx.fillRect(x, y, 1, 1);
+    }
     if (wall.front) {
       const lowerStart = { x: start.x, y: start.y + edgeDepth };
       const lowerEnd = { x: end.x, y: end.y + edgeDepth };
@@ -387,6 +396,29 @@ export class OfficeRenderer {
       ctx.fillRect(corners.east.x - 3, corners.east.y - 1, 1, 1);
       ctx.fillRect(corners.west.x + 2, corners.west.y - 1, 1, 1);
     }
+    if (mark % 4 === 1) {
+      this.drawGroundPatch(cell.col - 0.16, cell.row + 0.11, 0.2, 0.12, "#69634d");
+      this.drawGroundPatch(cell.col - 0.04, cell.row + 0.16, 0.08, 0.07, "#393b33");
+    }
+    if (mark % 6 === 2) {
+      const start = this.project(cell.col - 0.28, cell.row + 0.13);
+      const end = this.project(cell.col - 0.09, cell.row + 0.26);
+      drawPolygon(ctx, segmentBand(start, end, 0, 1, 0.45 * this.project.scale), "rgba(20,23,19,.64)");
+    }
+    if (mark % 9 === 0) {
+      this.drawGroundPatch(cell.col + 0.24, cell.row - 0.19, 0.075, 0.075, "#99906d");
+    }
+  }
+
+  drawGroundPatch(col, row, width, depth, color) {
+    const halfCol = width / 2;
+    const halfRow = depth / 2;
+    drawPolygon(this.ctx, [
+      this.project(col - halfCol, row - halfRow),
+      this.project(col + halfCol, row - halfRow),
+      this.project(col + halfCol, row + halfRow),
+      this.project(col - halfCol, row + halfRow),
+    ], color);
   }
 
   drawRoomSigns() {
@@ -493,11 +525,26 @@ export class OfficeRenderer {
     ctx.fillRect(x - 7, y - 11, 14, 2);
     ctx.fillStyle = "#233d39";
     ctx.fillRect(x - 4, y - 8, 8, 4);
+    ctx.fillStyle = "#477d6d";
+    ctx.fillRect(x - 3, y - 7, 4, 1);
+    ctx.fillRect(x - 3, y - 5, 2, 1);
+    ctx.fillStyle = "#172722";
+    ctx.fillRect(x + 1, y - 6, 2, 2);
+    ctx.fillStyle = "#b6a780";
+    ctx.fillRect(x - 6, y - 9, 1, 1);
+    ctx.fillRect(x + 5, y - 9, 1, 1);
     ctx.fillStyle = signal;
     ctx.fillRect(x - 2, y - 7, 4, 1);
     ctx.fillRect(x + 4, y - 9, 2, 2);
     ctx.fillStyle = "#d0bd91";
     ctx.fillRect(x - 10, y + 1, 3, 2);
+    ctx.fillStyle = "#5b604d";
+    ctx.fillRect(x - 6, y + 4, 12, 2);
+    ctx.fillStyle = "#20251f";
+    for (let key = 0; key < 5; key += 1) ctx.fillRect(x - 5 + key * 2, y + 4, 1, 1);
+    ctx.fillStyle = "#383d32";
+    ctx.fillRect(x + 12, y + 1, 1, 4);
+    ctx.fillRect(x + 12, y + 4, 3, 1);
     if (station.kind === "files") {
       ctx.fillStyle = "#c4b38b";
       ctx.fillRect(x + 7, y - 2, 5, 2);
@@ -617,7 +664,7 @@ export class OfficeRenderer {
   drawActor(actor, timestamp) {
     const appearance = WORKER_APPEARANCE[actor.id];
     const sprite = appearance.sprite;
-    const pixelScale = this.project.scale;
+    const pixelScale = this.project.scale / 2;
     const width = sprite[0].length;
     const height = sprite.length;
     const point = this.project(actor.col, actor.row);
@@ -625,6 +672,7 @@ export class OfficeRenderer {
     const y = Math.round(point.y - height * pixelScale);
     const screenWidth = width * pixelScale;
     const screenHeight = height * pixelScale;
+    const designWidth = width / 2;
     actor.bounds = { x, y, width: screenWidth, height: screenHeight };
     const moving = Math.hypot(actor.targetCol - actor.col, actor.targetRow - actor.row) > 0.03;
     const working = actor.status === "working";
@@ -639,21 +687,23 @@ export class OfficeRenderer {
         if (symbol === ".") continue;
         let color = SPRITE_COLORS[symbol];
         if (symbol === "A") color = actor.color;
+        if (symbol === "a") color = lighten(actor.color, 26);
         if (moving && symbol === "K" && (column + step) % 2 === 0) continue;
         this.ctx.fillStyle = color;
         this.ctx.fillRect(column, row, 1, 1);
       }
     }
-    this.drawWorkerGear(appearance.gear, 0, 0, width, timestamp);
+    this.ctx.scale(2, 2);
+    this.drawWorkerGear(appearance.gear, 0, 0, designWidth, timestamp);
     if (working) {
       const blink = Math.floor(timestamp / 400) % 2 === 0;
       this.ctx.fillStyle = blink ? PALETTE.green : PALETTE.amber;
-      this.ctx.fillRect(width - 3, 21 + step, 3, 2);
+      this.ctx.fillRect(designWidth - 3, 21 + step, 3, 2);
       this.ctx.fillStyle = blink ? PALETTE.green : PALETTE.light;
-      this.ctx.fillRect(width / 2 + 8, -4, 3, 3);
+      this.ctx.fillRect(designWidth / 2 + 8, -4, 3, 3);
     } else if (actor.status === "needs_review") {
       this.ctx.fillStyle = PALETTE.amber;
-      this.ctx.fillRect(width / 2 + 8, -4, 3, 3);
+      this.ctx.fillRect(designWidth / 2 + 8, -4, 3, 3);
     }
     this.ctx.restore();
     if (this.selection?.type === "worker" && this.selection.id === actor.id) {

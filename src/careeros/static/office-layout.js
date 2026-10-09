@@ -222,11 +222,17 @@ function addFinePixels(sprite) {
       if (symbol === "T" && yPart === 0 && xPart === 1 && (rowIndex + columnIndex) % 3 === 0) return "t";
       if (symbol === "J" && yPart === 1 && xPart === 0 && columnIndex % 3 === 0) return "j";
       if (symbol === "S" && yPart === 0 && xPart === 1 && columnIndex % 2 === 0) return "s";
+      if (symbol === "H" && yPart === 0 && xPart === 1 && (rowIndex + columnIndex) % 4 === 0) return "h";
+      if (symbol === "C" && yPart === 1 && xPart === 1 && columnIndex % 3 === 0) return "c";
+      if (symbol === "A" && yPart === 0 && xPart === 1 && (rowIndex + columnIndex) % 2 === 0) return "a";
+      if (symbol === "t" && yPart === 1 && xPart === 1) return "u";
+      if (symbol === "j" && yPart === 0 && xPart === 1 && columnIndex % 2 === 0) return "v";
+      if (symbol === "s" && yPart === 1 && xPart === 0) return "w";
       return symbol;
     })).join("")
   ))));
 }
-const DETAILED_BODY_SPRITE = addFinePixels(BODY_SPRITE);
+const DETAILED_BODY_SPRITE = addFinePixels(addFinePixels(BODY_SPRITE));
 
 function workerAppearance(color, stationId, waitCell, gear) {
   const wait = projectIso(waitCell.col, waitCell.row);
@@ -256,6 +262,12 @@ export const SPRITE_COLORS = Object.freeze({
   t: "#929274",
   j: "#4d5947",
   s: "#e3b18b",
+  h: "#625140",
+  c: "#90a08e",
+  a: "#ffffff",
+  u: "#b0ac87",
+  v: "#414b3c",
+  w: "#f2c29e",
   ".": null,
 });
 

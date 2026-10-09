@@ -11,6 +11,7 @@ const {
   STATIONS,
   WORKER_APPEARANCE,
   WORKER_STATIONS,
+  SPRITE_COLORS,
   createIsoProjector,
   findStationAt,
   projectIso,
@@ -118,11 +119,14 @@ test("worker destinations and clickable desk centers use the isometric map", () 
   assert.equal(STATIONS.find(item => item.room === "dispatch").selectionId, "settings");
 });
 
-test("worker sprites use a finer pixel grid for added face and uniform detail", () => {
+test("worker sprites use a dense pixel grid with extra shade and highlight colors", () => {
   for (const appearance of Object.values(WORKER_APPEARANCE)) {
-    assert.ok(appearance.sprite.length >= 30);
-    assert.ok(appearance.sprite.every(row => row.length >= 20));
+    assert.ok(appearance.sprite.length >= 70);
+    assert.ok(appearance.sprite.every(row => row.length >= 40));
+    const pixels = new Set(appearance.sprite.join(""));
+    assert.ok(pixels.has("u") && pixels.has("v") && pixels.has("w"));
   }
+  assert.ok(SPRITE_COLORS.u && SPRITE_COLORS.v && SPRITE_COLORS.w);
 });
 
 test("idle workers have separate floor positions instead of stacking in the corridor", () => {

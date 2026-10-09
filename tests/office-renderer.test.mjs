@@ -7,7 +7,7 @@ const rendererSource = await readFile(new URL("../src/careeros/static/office-ren
 const layoutUrl = `data:text/javascript;base64,${Buffer.from(layoutSource).toString("base64")}`;
 const rendererModule = rendererSource.replace('from "./office-layout.js"', `from "${layoutUrl}"`);
 const { OfficeRenderer } = await import(`data:text/javascript;base64,${Buffer.from(rendererModule).toString("base64")}`);
-const { FLOOR_CELLS, STATIONS } = await import(layoutUrl);
+const { FLOOR_CELLS, STATIONS, WORKER_APPEARANCE } = await import(layoutUrl);
 
 function canvasHarness() {
   const filledStyles = [];
@@ -121,6 +121,23 @@ test("pointer cancellation preserves the next click and arrow keys orbit the off
     assert.equal(prevented, true, "camera keys should not scroll the page");
     listeners.get("keydown")({ key: "Home", preventDefault() {} });
     assert.equal(renderer.rotation, 0, "Home should restore the starting angle");
+    renderer.destroy();
+  });
+});
+
+test("higher-density worker pixels keep the same clickable sprite footprint", () => {
+  withReducedMotion(() => {
+    const { canvas } = canvasHarness();
+    const renderer = new OfficeRenderer(canvas);
+    renderer.update({
+      workers: [{ id: "job-hunter", name: "Job Hunter", color: "cyan", status: "idle", station_id: "job-hunters-01" }],
+      counts: {},
+    });
+    const actor = renderer.actors.get("job-hunter");
+    const appearance = WORKER_APPEARANCE["job-hunter"];
+    assert.ok(Math.abs(actor.bounds.width - 22 * renderer.project.scale) < 0.01);
+    assert.ok(Math.abs(actor.bounds.height - 36 * renderer.project.scale) < 0.01);
+    assert.ok(appearance.sprite.length >= 70 && appearance.sprite[0].length >= 40);
     renderer.destroy();
   });
 });
