@@ -13,6 +13,7 @@ class FakePlanner:
     def __init__(self):
         self.calls = []
         self.result = None
+        self.base_url = "http://127.0.0.1:11434"
 
     def generate(self, request):
         self.calls.append(request)

@@ -1,12 +1,13 @@
 # CareerOS
 
-CareerOS is a local-first workspace for finding technology internships and jobs, preparing application drafts, and making progress on portfolio projects. The app stores its database, resumes, and portfolio files on your Mac. It does not submit applications, send email, publish code, or execute generated files.
+CareerOS is a local-first workspace for finding technology internships and jobs, preparing application and LinkedIn outreach drafts, and making progress on portfolio projects. The app stores its database, resumes, and portfolio files on your Mac. It does not submit applications, send messages, publish code, or execute generated files.
 
 ## What works in this MVP
 
 - Search cached job listings, refresh the public Arbeitnow feed, optionally add public Greenhouse and Lever boards, or add a listing by hand.
 - Save a career profile and plain-text resume versions locally.
 - Ask a planner to prepare a cover letter, resume-alignment notes, answers, and next steps. Edit and approve the draft before exporting Markdown.
+- Automatically prepare LinkedIn connection notes and follow-up drafts for matching roles when a profile and resume are saved. Edit and approve them before copying.
 - Give the portfolio worker a project brief, inspect its proposed files and diffs, approve them, then apply them inside the managed portfolio folder.
 - Keep a persistent SQLite task queue and recover local work after restart.
 - See queue-backed workers moving through a full-screen, top-down pixel-art office. Hover over a worker for its task, status, timing, and task ID; click for more detail.
@@ -47,7 +48,7 @@ CareerOS is a local-first workspace for finding technology internships and jobs,
 
    Then open [http://127.0.0.1:8000](http://127.0.0.1:8000). The default bind address is loopback, so other devices cannot reach the app.
 
-The first start creates `data/careeros.sqlite3`. Back up the `data/` folder to preserve your local profile, resumes, saved jobs, task history, and portfolio workspace.
+The first start creates `data/careeros.sqlite3`. Back up the `data/` folder to preserve your local profile, resumes, saved jobs, outreach drafts, task history, and portfolio workspace.
 
 ## Office autopilot
 
@@ -56,6 +57,8 @@ When CareerOS starts, the office worker queues a public listing scan automatical
 The office shows each worker's actual queue state. Hover over a worker for its current task and status, or select a worker or room for more detail. Use **AUTO ON** to pause future scans; work already queued is allowed to finish. Closing CareerOS stops the worker; the next scan runs after you reopen it if six hours have elapsed. The saved schedule prevents duplicate scans when the app restarts.
 
 Job discovery works without Ollama. To let CareerOS prepare a matching application draft automatically, save target roles and at least one resume version in Resume Team, then keep the configured local Ollama model available. A prepared application stays in Draft review until you inspect and approve it. CareerOS never submits an application. If Ollama is unavailable, discovery continues and the office shows the affected task state.
+
+LinkedIn Outreach uses the same saved target roles and resume. For the best drafts, add a short profile summary and skills in Resume Team. CareerOS prepares one local draft for a suitable role and shows the connection note, follow-up, and resume evidence in the Outreach station. Connection notes are capped at 200 characters to fit LinkedIn's current Basic invitation limit. Review and approve the wording, then choose a person and send it yourself from LinkedIn. For privacy, the worker waits without queuing drafts if `OLLAMA_BASE_URL` points anywhere except this Mac. CareerOS does not sign into LinkedIn, find contacts, or send messages.
 
 The portfolio worker can stage a project proposal after the job feed contains recurring technology skill evidence. It uses the local planner, and its files remain staged for your review. CareerOS does not run generated code or apply proposal files without your approval.
 
@@ -84,6 +87,7 @@ The connectors fetch public board listings without credentials. Feed refresh sen
 - Portfolio proposals are staged under `data/portfolio/.staging/`; approved files can only be applied below `data/portfolio/<project-id>/`.
 - The portfolio worker stores proposed programs as text and does not run them or invoke a shell.
 - Application approval only permits a local Markdown export; it does not submit or send anything.
+- LinkedIn outreach drafts and approvals stay in the local database. Approval only allows copying the message; it does not select a contact or send anything.
 - CareerOS has no account, cloud sync, or paid job-board service.
 
 ## Tests

@@ -50,6 +50,7 @@
               <button type="button" data-station="jobs"><span aria-hidden="true">⌕</span><span>Jobs</span></button>
               <button type="button" data-station="resume"><span aria-hidden="true">▤</span><span>Resume</span></button>
               <button type="button" data-station="applications"><span aria-hidden="true">▧</span><span>Drafts</span></button>
+              <button type="button" data-station="outreach"><span aria-hidden="true">✉</span><span>Outreach</span></button>
               <button type="button" data-station="portfolio"><span aria-hidden="true">⌘</span><span>Build</span></button>
               <button type="button" data-station="settings"><span aria-hidden="true">⚙</span><span>Planner</span></button>
             </nav>
@@ -82,6 +83,14 @@
       <section class="station-screen" id="applications-screen" hidden>
         <div class="screen-heading"><button class="back-link" data-station="home" type="button">← Office</button><p class="eyebrow">APPLICATION TEAM</p><h1>Draft review</h1><p>Application materials stay here for your review. CareerOS never submits them.</p></div>
         <section class="panel"><div class="panel-title"><div><span class="panel-kicker">APPLICATIONS</span><h2>Your drafts</h2></div><button id="refresh-office-applications" class="text-button" type="button">Refresh</button></div><div id="office-application-list" class="card-list"></div></section>
+      </section>
+
+      <section class="station-screen outreach-screen" id="outreach-screen" hidden>
+        <div class="screen-heading"><button class="back-link" data-station="home" type="button">← Office</button><h1>LinkedIn Outreach</h1></div>
+        <div class="two-column-layout outreach-layout">
+          <section class="panel"><div class="panel-title"><div><span class="panel-kicker">OUTREACH</span><h2>Draft queue</h2></div><button id="refresh-outreach" class="text-button" type="button">Refresh</button></div><div id="outreach-list" class="card-list"><p class="empty-state">Waiting for a matching role.</p></div></section>
+          <section class="panel outreach-review" id="outreach-review" aria-live="polite" hidden></section>
+        </div>
       </section>
 
       <section class="station-screen" id="jobs-screen" hidden>
@@ -139,6 +148,6 @@
       </form>
     </dialog>
   </div>
-  <script type="module" src="/static/app.js?v=office-neon"></script>
+  <script type="module" src="/static/app.js?v=linkedin-outreach"></script>
 </body>
 </html>

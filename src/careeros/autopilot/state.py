@@ -25,6 +25,11 @@ def dispatch_is_open(conn, fingerprint: str) -> bool:
             "UPDATE portfolio_proposals SET status='failed', updated_at=? WHERE task_id=? AND status='preparing'",
             (now(), row["task_id"]),
         )
+    elif row["kind"] == "outreach":
+        conn.execute(
+            "UPDATE outreach_drafts SET status='failed', updated_at=? WHERE task_id=? AND status='preparing'",
+            (now(), row["task_id"]),
+        )
     conn.execute("DELETE FROM autopilot_dispatches WHERE fingerprint=?", (fingerprint,))
     return False
 

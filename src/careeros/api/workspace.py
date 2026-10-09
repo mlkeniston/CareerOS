@@ -11,12 +11,14 @@ _WORKERS = (
     ("resume-analyst", "Resume Team", "resume-team-01", "green", None),
     ("application-prep", "Application Team", "application-team-01", "amber", "application"),
     ("portfolio-engineer", "Engineering Team", "engineering-team-01", "purple", "portfolio"),
+    ("linkedin-outreach", "LinkedIn Outreach", "outreach-team-01", "coral", "outreach"),
     ("director", "Dispatch", "dispatch-01", "coral", None),
 )
 _TASK_LABELS = {
     "job_discovery": "Scan public listings",
     "application": "Prepare application draft",
     "portfolio": "Prepare portfolio proposal",
+    "outreach": "Prepare LinkedIn outreach draft",
 }
 _STATUS_PRIORITY = {"running": 0, "queued": 1, "needs_review": 2, "failed": 3, "interrupted": 4}
 
@@ -41,6 +43,7 @@ def get_workspace(request: Request):
         jobs_found = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         drafts_to_review = conn.execute("SELECT COUNT(*) FROM applications WHERE status='needs_review'").fetchone()[0]
         proposals_to_review = conn.execute("SELECT COUNT(*) FROM portfolio_proposals WHERE status='needs_review'").fetchone()[0]
+        outreach_to_review = conn.execute("SELECT COUNT(*) FROM outreach_drafts WHERE status='needs_review'").fetchone()[0]
         approved_applications = conn.execute("SELECT COUNT(*) FROM applications WHERE status='approved'").fetchone()[0]
         applied_proposals = conn.execute("SELECT COUNT(*) FROM portfolio_proposals WHERE status='applied'").fetchone()[0]
         provider_row = conn.execute("SELECT value FROM settings WHERE key='planner_provider'").fetchone()
@@ -57,6 +60,7 @@ def get_workspace(request: Request):
     has_resume = request.app.state.resume_repository.most_recent() is not None
     profile = request.app.state.profile_repository.get()
     has_target_roles = bool([role for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()])
+    outreach_local_endpoint = request.app.state.outreach_service.local_endpoint_ready()
     recent_jobs = request.app.state.job_repository.recent(limit=500)
     jobs_matched = sum(1 for job in recent_jobs if score_technology_role(job)[0] >= 70)
     worker_items = []
@@ -71,7 +75,9 @@ def get_workspace(request: Request):
         if task is not None:
             worker.update(_worker_task(task))
         else:
-            status, label = _waiting_state(worker_id, state["enabled"], has_resume, has_target_roles, model_state)
+            status, label = _waiting_state(
+                worker_id, state["enabled"], has_resume, has_target_roles, model_state, outreach_local_endpoint
+            )
             worker.update({"status": status, "task_label": label})
         worker_items.append(worker)
 
@@ -90,6 +96,7 @@ def get_workspace(request: Request):
             "tasks_shipped": approved_applications + applied_proposals,
             "drafts_to_review": drafts_to_review,
             "proposals_to_review": proposals_to_review,
+            "outreach_to_review": outreach_to_review,
         },
         "activity": activity,
         "model": {
@@ -115,12 +122,14 @@ def _worker_task(task) -> dict:
         label = {
             "application": "Application draft ready for review",
             "portfolio": "Proposal ready for review",
+            "outreach": "LinkedIn draft ready for review",
         }.get(task.kind, "Task ready for review")
     elif task.status == "failed":
         label = {
             "job_discovery": "Listing scan failed",
             "application": "Application preparation failed",
             "portfolio": "Portfolio proposal failed",
+            "outreach": "LinkedIn outreach preparation failed",
         }.get(task.kind, "Task failed")
     elif task.status == "interrupted":
         label = "Task interrupted"
@@ -135,10 +144,19 @@ def _worker_task(task) -> dict:
     return result
 
 
-def _waiting_state(worker_id: str, enabled: bool, has_resume: bool, has_target_roles: bool, model_state: str) -> tuple[str, str]:
+def _waiting_state(
+    worker_id: str,
+    enabled: bool,
+    has_resume: bool,
+    has_target_roles: bool,
+    model_state: str,
+    outreach_local_endpoint: bool = True,
+) -> tuple[str, str]:
     if worker_id == "job-hunter":
         return ("paused", "Job discovery is paused") if not enabled else ("idle", "Waiting for the next listing scan")
-    if worker_id in {"resume-analyst", "application-prep"}:
+    if worker_id in {"resume-analyst", "application-prep", "linkedin-outreach"}:
+        if worker_id == "linkedin-outreach" and not outreach_local_endpoint:
+            return "waiting", "LinkedIn outreach needs Ollama on this Mac"
         if not has_resume:
             return "waiting", "Add a resume to enable draft preparation"
         if not has_target_roles:

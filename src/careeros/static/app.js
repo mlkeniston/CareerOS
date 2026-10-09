@@ -1,6 +1,6 @@
 import { OfficeRenderer } from "./office-renderer.js";
 
-const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, office: null, officeSelection: null };
+const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, activeOutreach: null, office: null, officeSelection: null };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 const officeRenderer = new OfficeRenderer($("#office-canvas"), {
@@ -66,6 +66,8 @@ function go(station) {
     loadProposals();
   } else if (station === "applications") {
     loadOfficeApplications();
+  } else if (station === "outreach") {
+    loadOutreach();
   } else if (station === "settings") {
     loadSettings();
   }
@@ -244,6 +246,7 @@ function renderWorkerRoster(workers) {
       list.append(slot);
     }
     button.setAttribute("aria-pressed", String(state.officeSelection?.type === "worker" && state.officeSelection.id === worker.id));
+    button.dataset.workerColor = worker.color || "cyan";
     const status = ["idle", "waiting", "paused", "working", "needs_review", "failed", "interrupted"].includes(worker.status) ? worker.status : "waiting";
     const copy = element("span", "worker-copy");
     copy.append(element("strong", "", worker.department || worker.id));
@@ -277,7 +280,7 @@ function renderOfficeCounts(snapshot) {
   $("#saved-job-count").textContent = formatCount(counts.jobs_found);
   $("#matched-job-count").textContent = `${formatCount(counts.jobs_matched)} technology matches`;
   $("#application-count").textContent = formatCount(counts.tasks_shipped);
-  $("#draft-review-count").textContent = formatCount(counts.drafts_to_review);
+  $("#draft-review-count").textContent = formatCount((counts.drafts_to_review || 0) + (counts.outreach_to_review || 0));
   $("#proposal-review-count").textContent = `${formatCount(counts.proposals_to_review)} proposals`;
   const model = snapshot.model || {};
   $("#model-state").textContent = ({ ready: "Ready", offline: "Offline", model_missing: "Model needed" })[model.state] || "Checking";
@@ -304,6 +307,7 @@ const OFFICE_STATIONS = {
   jobs: { title: "Job Hunters", target: "jobs", description: "Search technology roles and review the listings CareerOS found." },
   resume: { title: "Resume Team", target: "resume", description: "Keep your profile and resume versions on this Mac." },
   applications: { title: "Application Team", target: "applications", description: "Review application drafts. CareerOS never submits them." },
+  outreach: { title: "LinkedIn Outreach", target: "outreach", description: "Review locally prepared messages for matched roles." },
   portfolio: { title: "Engineering Team", target: "portfolio", description: "Review staged project proposals before applying any files." },
   settings: { title: "Dispatch", target: "settings", description: "Choose the local planner or explicitly configure optional cloud use." },
 };
@@ -312,6 +316,7 @@ const WORKER_STATIONS = {
   "resume-analyst": "resume",
   "application-prep": "applications",
   "portfolio-engineer": "portfolio",
+  "linkedin-outreach": "outreach",
   director: "settings",
 };
 
@@ -493,6 +498,179 @@ async function loadOfficeApplications() {
   } catch (error) {
     list.replaceChildren(element("p", "empty-state", error.message));
   }
+}
+
+$("#refresh-outreach").addEventListener("click", loadOutreach);
+
+async function loadOutreach() {
+  const list = $("#outreach-list");
+  try {
+    const drafts = await api("/api/outreach");
+    list.replaceChildren();
+    if (!drafts.length) {
+      list.append(element("p", "empty-state", "Waiting for a matching role."));
+      $("#outreach-review").hidden = true;
+      state.activeOutreach = null;
+      return;
+    }
+    drafts.forEach(draft => {
+      const card = element("button", "application-card", "");
+      card.type = "button";
+      const row = element("div", "list-card-top");
+      row.append(
+        element("p", "list-card-title", `${draft.company} · ${draft.job_title}`),
+        element("span", `state-label ${draft.status === "failed" ? "failed" : ""}`, formatStatus(draft.status)),
+      );
+      card.append(row, element("p", "list-card-sub", `Updated ${formatTimestamp(draft.updated_at)}`));
+      card.setAttribute("aria-pressed", String(state.activeOutreach === draft.id));
+      card.addEventListener("click", () => loadOutreachDraft(draft.id));
+      list.append(card);
+    });
+    const active = drafts.find(item => item.id === state.activeOutreach) || drafts.find(item => item.status === "needs_review") || drafts[0];
+    await loadOutreachDraft(active.id);
+  } catch (error) {
+    list.replaceChildren(element("p", "empty-state", error.message));
+  }
+}
+
+async function loadOutreachDraft(id) {
+  try {
+    const draft = await api(`/api/outreach/${encodeURIComponent(id)}`);
+    state.activeOutreach = draft.id;
+    renderOutreachDraft(draft);
+  } catch (error) { notify(error.message); }
+}
+
+function renderOutreachDraft(item) {
+  const panel = $("#outreach-review");
+  panel.hidden = false;
+  panel.replaceChildren();
+  const title = element("div", "panel-title");
+  const copy = element("div");
+  copy.append(element("span", "panel-kicker", item.company), element("h2", "", item.job_title));
+  title.append(copy, element("span", `state-label ${item.status === "failed" ? "failed" : ""}`, formatStatus(item.status)));
+  panel.append(title);
+  const roleUrl = safeJobUrl(item.job_url);
+  if (roleUrl) {
+    const link = element("a", "job-link outreach-role-link", "View role");
+    link.href = roleUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    panel.append(link);
+  }
+  if (item.status === "preparing") {
+    panel.append(element("p", "muted", "Preparing locally…"));
+    return;
+  }
+  if (["failed", "interrupted"].includes(item.status)) {
+    panel.append(element("p", "muted", item.task_error || "The local draft could not be prepared. A later role scan can retry."));
+    return;
+  }
+  if (!item.draft) {
+    panel.append(element("p", "muted", "No message is available."));
+    return;
+  }
+
+  const message = item.draft;
+  if (item.status === "needs_review") {
+    const grid = element("div", "review-grid outreach-editors");
+    const note = addOutreachEditor(grid, "Connection note", message.connection_note, 4, 200);
+    const followUp = addOutreachEditor(grid, "Follow-up message", message.follow_up_message, 8);
+    const evidence = addOutreachEditor(grid, "Resume evidence · one item per line", (message.evidence || []).join("\n"), 4);
+    panel.append(grid);
+    const actions = element("div", "review-actions");
+    const save = element("button", "button button-soft", "Save edits");
+    save.type = "button";
+    save.addEventListener("click", async () => {
+      try {
+        await saveOutreachDraft(item.id, note, followUp, evidence);
+        notify("Outreach edits saved");
+        await loadOutreach();
+      } catch (error) { notify(error.message); }
+    });
+    const approve = element("button", "button button-dark", "Approve for manual use");
+    approve.type = "button";
+    approve.addEventListener("click", async () => {
+      try {
+        await saveOutreachDraft(item.id, note, followUp, evidence);
+        await api(`/api/outreach/${encodeURIComponent(item.id)}/approve`, { method: "POST" });
+        notify("Approved. Choose a contact and send it yourself.");
+        await loadOutreach();
+        refreshOverview();
+      } catch (error) { notify(error.message); }
+    });
+    actions.append(save, approve);
+    panel.append(actions);
+    return;
+  }
+
+  panel.append(outreachMessage("Connection note", message.connection_note));
+  panel.append(outreachMessage("Follow-up message", message.follow_up_message));
+  if ((message.evidence || []).length) {
+    const evidence = element("ul", "outreach-evidence");
+    message.evidence.forEach(item => evidence.append(element("li", "", item)));
+    panel.append(evidence);
+  }
+  const actions = element("div", "review-actions outreach-actions");
+  actions.append(
+    copyOutreachButton(item.id, "Copy connection note", message.connection_note),
+    copyOutreachButton(item.id, "Copy follow-up", message.follow_up_message),
+  );
+  const exportLink = element("a", "button button-soft", "Export both");
+  exportLink.href = `/api/outreach/${encodeURIComponent(item.id)}/export`;
+  exportLink.download = `careeros-outreach-${item.id.slice(0, 8)}.txt`;
+  actions.append(exportLink);
+  panel.append(actions, element("p", "small-note", "Approved for you to copy and send manually."));
+}
+
+function addOutreachEditor(root, title, value, rows, maxLength = null) {
+  const label = element("label", "full");
+  label.append(element("span", "", title));
+  const textarea = element("textarea");
+  textarea.value = value || "";
+  textarea.rows = rows;
+  if (maxLength) {
+    textarea.maxLength = maxLength;
+    const counter = element("small", "outreach-character-count", `${textarea.value.length}/${maxLength}`);
+    textarea.addEventListener("input", () => { counter.textContent = `${textarea.value.length}/${maxLength}`; });
+    label.append(textarea, counter);
+    root.append(label);
+    return textarea;
+  }
+  label.append(textarea);
+  root.append(label);
+  return textarea;
+}
+
+async function saveOutreachDraft(id, note, followUp, evidence) {
+  await api(`/api/outreach/${encodeURIComponent(id)}/draft`, {
+    method: "PUT",
+    body: {
+      connection_note: note.value,
+      follow_up_message: followUp.value,
+      evidence: evidence.value.split("\n").map(value => value.trim()).filter(Boolean),
+    },
+  });
+}
+
+function outreachMessage(title, value) {
+  const section = element("section", "outreach-message-section");
+  section.append(element("h3", "list-card-title", title), element("p", "outreach-message", value));
+  return section;
+}
+
+function copyOutreachButton(id, label, value) {
+  const button = element("button", "button button-soft", label);
+  button.type = "button";
+  button.addEventListener("click", async () => {
+    if (state.activeOutreach !== id) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable. Select the message to copy it.");
+      await navigator.clipboard.writeText(value);
+      notify("Copied to clipboard");
+    } catch (error) { notify(error.message); }
+  });
+  return button;
 }
 
 function startOfficePolling() {

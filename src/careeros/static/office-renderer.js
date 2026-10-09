@@ -189,19 +189,19 @@ export class OfficeRenderer {
     gradient.addColorStop(0.55, "rgba(67, 48, 155, .12)");
     gradient.addColorStop(1, "rgba(26, 24, 74, 0)");
     this.ctx.fillStyle = gradient;
-    this.ctx.fillRect(0, 0, 235, 170);
-    const second = this.ctx.createRadialGradient(392, 218, 3, 392, 218, 104);
+    this.ctx.fillRect(0, 0, 260, 225);
+    const second = this.ctx.createRadialGradient(486, 260, 3, 486, 260, 130);
     second.addColorStop(0, "rgba(45, 151, 207, .14)");
     second.addColorStop(1, "rgba(20, 30, 76, 0)");
     this.ctx.fillStyle = second;
-    this.ctx.fillRect(300, 160, 180, 110);
+    this.ctx.fillRect(340, 170, 260, 168);
   }
 
   drawStars() {
     const ctx = this.ctx;
     for (let index = 0; index < 58; index += 1) {
-      const x = (index * 83 + 19) % 480;
-      const y = (index * 47 + 13) % 270;
+      const x = (index * 83 + 19) % LOGICAL_SIZE.width;
+      const y = (index * 47 + 13) % LOGICAL_SIZE.height;
       if (insideAnyRoom(x, y)) continue;
       ctx.fillStyle = index % 9 === 0 ? PALETTE.cyan : index % 7 === 0 ? PALETTE.purple : "#515274";
       ctx.fillRect(x, y, index % 11 === 0 ? 2 : 1, index % 11 === 0 ? 2 : 1);
@@ -287,7 +287,7 @@ export class OfficeRenderer {
     for (const room of ROOMS) {
       if (room.id === "dispatch") continue;
       const x = Math.floor(room.x + room.width / 2 - 7);
-      const y = room.id === "jobs" || room.id === "resume" ? room.y + room.height - 5 : room.y - 1;
+      const y = room.y < LOGICAL_SIZE.height / 2 ? room.y + room.height - 5 : room.y - 1;
       ctx.fillStyle = PALETTE.floor;
       ctx.fillRect(x, y, 14, 7);
       for (let stripe = 0; stripe < 4; stripe += 1) {
@@ -337,6 +337,7 @@ export class OfficeRenderer {
       applications: [`DRAFT ${formatCount(counts.drafts_to_review)}`],
       portfolio: [`REVIEW ${formatCount(counts.proposals_to_review)}`, `DONE ${formatCount(counts.tasks_shipped)}`],
       dispatch: [],
+      outreach: [`REVIEW ${formatCount(counts.outreach_to_review)}`],
     };
     for (const room of ROOMS) {
       const entries = counters[room.id] || [];
@@ -395,7 +396,9 @@ export class OfficeRenderer {
     ctx.lineWidth = 1;
     ctx.strokeRect(5.5, 5.5, LOGICAL_SIZE.width - 11, LOGICAL_SIZE.height - 11);
     ctx.fillStyle = PALETTE.frame;
-    for (const [index, [x, y]] of [[6, 6], [470, 6], [6, 260], [470, 260]].entries()) {
+    const right = LOGICAL_SIZE.width - 10;
+    const bottom = LOGICAL_SIZE.height - 10;
+    for (const [index, [x, y]] of [[6, 6], [right, 6], [6, bottom], [right, bottom]].entries()) {
       ctx.fillStyle = index % 2 === 0 ? PALETTE.cyan : PALETTE.purple;
       ctx.fillRect(x, y, 3, 3);
     }
@@ -465,6 +468,7 @@ function stationIdForRoom(roomId) {
     applications: "application-team-01",
     portfolio: "engineering-team-01",
     dispatch: "dispatch-01",
+    outreach: "outreach-team-01",
   }[roomId];
 }
 

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from careeros.api import applications, autopilot, health, jobs, portfolio, profiles, settings as settings_api, tasks, workspace
+from careeros.api import applications, autopilot, health, jobs, outreach, portfolio, profiles, settings as settings_api, tasks, workspace
 from careeros.applications.service import ApplicationService
 from careeros.autopilot.scheduler import AutopilotScheduler
 from careeros.autopilot.state import AutopilotState
@@ -25,6 +25,7 @@ from careeros.planner.openai import OpenAIPlanner
 from careeros.portfolio.paths import PortfolioPaths
 from careeros.portfolio.service import PortfolioService
 from careeros.profiles.repository import ProfileRepository, ResumeRepository
+from careeros.outreach.service import OutreachService
 from careeros.queue import TaskQueue
 from careeros.worker import Worker
 
@@ -49,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openai_configured=bool(settings.openai_api_key),
     )
     application_service = ApplicationService(db, queue, gateway, job_repository, profile_repository, resume_repository)
+    outreach_service = OutreachService(db, queue, gateway, job_repository, profile_repository, resume_repository)
     portfolio_paths = PortfolioPaths(settings.data_dir)
     portfolio_service = PortfolioService(db, queue, gateway, portfolio_paths)
     def tick_autopilot() -> None:
@@ -65,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     worker = Worker(queue, before_claim=tick_autopilot)
     worker.register("application", application_service.handle_task)
+    worker.register("outreach", outreach_service.handle_task)
     worker.register("portfolio", portfolio_service.handle_task)
 
     @asynccontextmanager
@@ -93,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.profile_repository = profile_repository
     app.state.resume_repository = resume_repository
     app.state.application_service = application_service
+    app.state.outreach_service = outreach_service
     app.state.portfolio_service = portfolio_service
     app.state.portfolio_paths = portfolio_paths
 
@@ -110,11 +114,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         portfolio_service,
         profile_repository,
         resume_repository,
+        outreach_service,
     )
     app.state.job_discovery_service = job_discovery_service
     worker.register("job_discovery", job_discovery_service.handle_task)
 
-    for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, portfolio.router, autopilot.router, workspace.router):
+    for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, outreach.router, portfolio.router, autopilot.router, workspace.router):
         app.include_router(router)
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")

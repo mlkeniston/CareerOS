@@ -35,6 +35,7 @@ class JobDiscoveryService:
         portfolios=None,
         profiles: ProfileRepository | None = None,
         resumes: ResumeRepository | None = None,
+        outreach=None,
     ):
         self.repository = repository
         self.sources = list(sources)
@@ -42,6 +43,7 @@ class JobDiscoveryService:
         self.portfolios = portfolios
         self.profiles = profiles
         self.resumes = resumes
+        self.outreach = outreach
 
     def handle_task(self, task: Task) -> TaskOutcome:
         if not self.sources:
@@ -69,11 +71,13 @@ class JobDiscoveryService:
             if score_technology_role(job)[0] >= 70
         )
         application_queued = self._queue_application()
+        outreach_queued = self._queue_outreach()
         portfolio_queued = self._queue_portfolio()
         result = {
             "jobs_found": jobs_found,
             "jobs_matched": jobs_matched,
             "application_queued": application_queued,
+            "outreach_queued": outreach_queued,
             "portfolio_queued": portfolio_queued,
             "successful_sources": successful_sources,
             "failed_sources": failed_sources,
@@ -102,6 +106,31 @@ class JobDiscoveryService:
         job = max(candidates, key=lambda item: item[:4])[4]
         fingerprint = hashlib.sha256(f"application:{job.id}:{resume.id}".encode()).hexdigest()
         return self.applications.create_automatic(job.id, resume.id, fingerprint) is not None
+
+    def _queue_outreach(self) -> bool:
+        if not all((self.outreach, self.profiles, self.resumes)):
+            return False
+        if not self.outreach.local_endpoint_ready():
+            return False
+        profile = self.profiles.get()
+        roles = [role.strip() for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()]
+        resume = self.resumes.most_recent() if roles else None
+        if not roles or resume is None:
+            return False
+        candidates = []
+        for job in self.repository.recent(limit=500):
+            technology_score, _ = score_technology_role(job)
+            if technology_score < 70:
+                continue
+            relevance = max((_role_overlap(job.title, role) for role in roles), default=0)
+            if relevance:
+                candidates.append((technology_score, relevance, job.published_at or "", job.title.casefold(), job))
+        for candidate in sorted(candidates, key=lambda item: item[:4], reverse=True):
+            job = candidate[4]
+            fingerprint = hashlib.sha256(f"outreach:{job.id}:{resume.id}".encode()).hexdigest()
+            if self.outreach.create_automatic(job.id, resume.id, fingerprint) is not None:
+                return True
+        return False
 
     def _queue_portfolio(self) -> bool:
         if self.portfolios is None:

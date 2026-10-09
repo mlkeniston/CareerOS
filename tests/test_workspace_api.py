@@ -46,12 +46,19 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     queue.fail(discovery_failed, "PRIVATE TASK ERROR")
     discovery_done = queue.enqueue("job_discovery", {}, "ollama")
     queue.finish(discovery_done, {"jobs_found": 18, "private": "PRIVATE TASK RESULT"})
+    outreach_draft, outreach_task = app.state.outreach_service.create_automatic(job.id, resume.id, "private-outreach")
+    queue.finish(outreach_task, {"outreach_id": outreach_draft.id}, "needs_review")
+    with app.state.db.connect() as conn:
+        conn.execute(
+            "UPDATE outreach_drafts SET status='needs_review',draft_json=? WHERE id=?",
+            (json.dumps({"connection_note": "PRIVATE OUTREACH MESSAGE"}), outreach_draft.id),
+        )
 
     snapshot = client.get("/api/workspace").json()
     workers = {worker["id"]: worker for worker in snapshot["workers"]}
 
-    assert [workers[key]["department"] for key in ("job-hunter", "resume-analyst", "application-prep", "portfolio-engineer", "director")] == [
-        "Job Hunters", "Resume Team", "Application Team", "Engineering Team", "Dispatch"
+    assert [workers[key]["department"] for key in ("job-hunter", "resume-analyst", "application-prep", "portfolio-engineer", "linkedin-outreach", "director")] == [
+        "Job Hunters", "Resume Team", "Application Team", "Engineering Team", "LinkedIn Outreach", "Dispatch"
     ]
     assert workers["job-hunter"]["status"] == "waiting"
     assert workers["job-hunter"]["task_id"] == discovery_waiting
@@ -60,6 +67,9 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     assert workers["application-prep"]["since"] == "2026-10-09T12:00:00+00:00"
     assert workers["portfolio-engineer"]["status"] == "needs_review"
     assert "since" not in workers["portfolio-engineer"]
+    assert workers["linkedin-outreach"]["status"] == "needs_review"
+    assert workers["linkedin-outreach"]["task_id"] == outreach_task
+    assert "LinkedIn draft" in workers["linkedin-outreach"]["task_label"]
     assert "target roles" in workers["resume-analyst"]["task_label"].lower()
     assert workers["director"]["status"] != "working"
     assert sum(worker["status"] == "working" for worker in snapshot["workers"]) == 1
@@ -69,6 +79,7 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
         "tasks_shipped": 2,
         "drafts_to_review": 1,
         "proposals_to_review": 1,
+        "outreach_to_review": 1,
     }
     assert len(snapshot["activity"]) <= 10
     assert any(item["label"] == "Indexed 18 roles" for item in snapshot["activity"])
@@ -80,7 +91,7 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
         "PRIVATE JOB DESCRIPTION", "PRIVATE RESUME TEXT", "PRIVATE PROFILE SUMMARY",
         "PRIVATE DRAFT CONTENT", "PRIVATE APPROVED CONTENT", "PRIVATE PROPOSAL BRIEF",
         "PRIVATE PROPOSAL FILE", "PRIVATE PROPOSAL SUMMARY", "PRIVATE TASK PAYLOAD",
-        "PRIVATE TASK ERROR", "PRIVATE TASK RESULT", "sk-workspace-secret",
+        "PRIVATE TASK ERROR", "PRIVATE TASK RESULT", "PRIVATE OUTREACH MESSAGE", "sk-workspace-secret",
     ):
         assert private not in serialized
 
