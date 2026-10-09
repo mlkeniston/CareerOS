@@ -63,7 +63,7 @@ The API separates listing search/refresh, profile and resume management, applica
 - No account or cloud sync is part of the MVP.
 - The server binds to loopback unless the user changes configuration deliberately.
 - Local is the default provider. Provider selection is visible and persisted locally.
-- A cloud call requires an explicit per-task action and paid-use confirmation. No background cloud planning, fallback, or hidden provider change is allowed.
+- A cloud call requires an explicit per-task action and paid-use confirmation. No background cloud planning, fallback, hidden provider change, or automatic retry of a cloud request is allowed.
 - Job listing refresh transmits search filters only.
 - Application drafts require human review. CareerOS does not apply, email, or contact employers.
 - Portfolio changes require review before they are copied from staging into the managed project folder. Generated programs are not executed by the worker.
@@ -73,7 +73,7 @@ The API separates listing search/refresh, profile and resume management, applica
 
 - A job-source timeout or malformed response is shown as a refresh error; cached listings remain available.
 - A provider timeout, missing model, or invalid credentials marks the task failed with a concise actionable message. Retrying is user-initiated, and a failed provider never triggers a different provider.
-- A worker restart returns abandoned `running` tasks to the queue if they have no saved result. Tasks with results retain them for review rather than running again.
+- A worker restart returns abandoned local tasks to the queue if they have no saved result and are safe to retry. An interrupted cloud task is marked `interrupted` and waits for a new user action with paid-use confirmation, since the prior request may already have incurred usage. Tasks with results retain them for review rather than running again.
 - SQLite writes use transactions. Search and read-only views remain usable when a background task fails.
 - Invalid or unsupported proposed paths are rejected before applying portfolio files.
 
