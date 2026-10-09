@@ -4,6 +4,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from careeros.autopilot.matching import score_technology_role
 from careeros.jobs.models import JobListing, JobQuery
 from careeros.jobs.repository import JobRepository
 
@@ -76,4 +77,5 @@ def unsave_job(job_id: str, request: Request):
 
 
 def _job_json(job: JobListing) -> dict:
-    return {"id": job.id, "source": job.source, "title": job.title, "company": job.company, "location": job.location, "kind": job.kind, "original_kind": job.original_kind, "remote": job.remote, "url": job.url, "description": job.description, "published_at": job.published_at, "is_saved": job.is_saved}
+    score, reasons = score_technology_role(job)
+    return {"id": job.id, "source": job.source, "title": job.title, "company": job.company, "location": job.location, "kind": job.kind, "original_kind": job.original_kind, "remote": job.remote, "url": job.url, "description": job.description, "published_at": job.published_at, "is_saved": job.is_saved, "technology_score": score, "technology_reasons": reasons}

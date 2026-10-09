@@ -38,3 +38,13 @@ def test_failed_refresh_keeps_cached_jobs(client):
     result = client.post("/api/jobs/refresh", json={}).json()
     assert result["sources"][0]["error"]
     assert len(client.get("/api/jobs?q=intern").json()) == 1
+
+
+def test_search_results_explain_local_technology_role_match(client):
+    listing = JobListing("fixture", "intern", "Software Engineering Intern", "Acme", "Remote", "internship", "https://jobs.example/intern", "Build Python services", None, "2026-10-09")
+    client.app.state.job_repository.upsert_many([listing])
+
+    result = client.get("/api/jobs?q=software").json()[0]
+
+    assert result["technology_score"] == 100
+    assert result["technology_reasons"] == ["Technology role: software", "Internship or early-career signal"]

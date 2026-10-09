@@ -13,6 +13,7 @@ from careeros.api import applications, autopilot, health, jobs, portfolio, profi
 from careeros.applications.service import ApplicationService
 from careeros.autopilot.scheduler import AutopilotScheduler
 from careeros.autopilot.state import AutopilotState
+from careeros.autopilot.discovery import JobDiscoveryService
 from careeros.config import Settings
 from careeros.db import Database
 from careeros.jobs.arbeitnow import ArbeitnowSource
@@ -102,6 +103,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.lever_sites:
         job_sources.append(LeverSource(feed_client, list(settings.lever_sites)))
     app.state.job_sources = job_sources
+    job_discovery_service = JobDiscoveryService(job_repository, job_sources)
+    app.state.job_discovery_service = job_discovery_service
+    worker.register("job_discovery", job_discovery_service.handle_task)
 
     for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, portfolio.router, autopilot.router):
         app.include_router(router)

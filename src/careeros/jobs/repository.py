@@ -77,6 +77,10 @@ class JobRepository:
             rows = conn.execute("SELECT jobs.* FROM jobs" + joins + clause + " ORDER BY coalesce(published_at,'') DESC, company, title LIMIT ?", params).fetchall()
         return [_job(row) for row in rows]
 
+    def recent(self, limit: int = 100) -> list[JobListing]:
+        """Return the newest cached listings for matching and office summaries."""
+        return self.search(JobQuery(limit=limit))
+
 
 def _job(row: sqlite3.Row) -> JobListing:
     return JobListing(row["source"], row["external_id"], row["title"], row["company"], row["location"], row["kind"], row["url"], row["description"], row["published_at"], row["fetched_at"], bool(row["remote"]), row["id"], row["original_kind"], bool(row["is_saved"]))
