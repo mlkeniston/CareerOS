@@ -1,7 +1,7 @@
 # CareerOS MVP Design
 
 **Date:** 2026-10-09  
-**Status:** Awaiting user review  
+**Status:** Approved by user on 2026-10-09
 **Target:** Local-first open-source job-search and portfolio assistant for a 2020 M1 Mac with 8 GB RAM
 
 ## Goal
@@ -98,5 +98,11 @@ The first release will not auto-submit job applications, send email, scrape logi
 
 - MIT is the proposed source license unless the user names a different one.
 - The initial aggregate source is the public Arbeitnow job-board feed; Greenhouse/Lever integrations use public employer-board listings where the user supplies a board identifier. Source connectors can be replaced without changing the API or database contract.
+
+## MVP implementation notes
+
+- Cloud review displays the exact resume/profile/job or project content that will be sent. The server hashes that preview, rechecks it when the task starts, and uses the reviewed snapshot so later local edits do not silently change the cloud request.
+- The OpenAI adapter calls the Responses API directly over `httpx`, with no SDK retry behavior. Cloud requests have a fixed output-token cap and are never retried automatically.
+- The shipped implementation uses the MIT license and a system-font-only interface, with no external font requests.
 - Resume input is plain text (`.txt`/Markdown or paste) in the MVP. PDF/DOCX parsing is deferred to keep local setup and memory use small.
 - The local model is configurable; the proposed `qwen2.5:1.5b` tag is a starting point, not a quality guarantee on every machine.

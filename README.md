@@ -1,0 +1,109 @@
+# CareerOS
+
+CareerOS is a local-first workspace for finding technology internships and jobs, preparing application drafts, and making progress on portfolio projects. The app stores its database, resumes, and portfolio files on your Mac. It does not submit applications, send email, publish code, or execute generated files.
+
+## What works in this MVP
+
+- Search cached job listings, refresh the public Arbeitnow feed, optionally add public Greenhouse and Lever boards, or add a listing by hand.
+- Save a career profile and plain-text resume versions locally.
+- Ask a planner to prepare a cover letter, resume-alignment notes, answers, and next steps. Edit and approve the draft before exporting Markdown.
+- Give the portfolio worker a project brief, inspect its proposed files and diffs, approve them, then apply them inside the managed portfolio folder.
+- Keep a persistent SQLite task queue and recover local work after restart.
+- Use a top-down pixel-art office as the navigation for each station.
+
+## Requirements
+
+- macOS on Apple silicon or another machine running Python 3.11 or newer.
+- Ollama for local planning. The default model is `qwen2.5:1.5b`, a small model selected to fit an 8 GB Mac more comfortably than larger models. Local speed and writing quality depend on the machine and model build.
+- OpenAI API access is optional. The cloud planner uses the verified API model ID `gpt-6-luna`. OpenAI's published standard rates checked on 2026-10-09 are $0.10 per million input tokens and $0.50 per million output tokens. API usage is billed separately from ChatGPT plans, and the API free tier is not supported. See the [official model page](https://developers.openai.com/api/docs/models/gpt-6-luna) for current access and pricing.
+
+## Run locally
+
+1. Install Python 3.11+ and [Ollama](https://ollama.com/download).
+2. Open Terminal in this folder and create an environment:
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install --upgrade pip
+   pip install -e '.[dev]'
+   ```
+
+3. Download the default local model and start Ollama:
+
+   ```bash
+   ollama pull qwen2.5:1.5b
+   ollama serve
+   ```
+
+   If Ollama is already running from its Mac app, leave that process running and skip `ollama serve`.
+
+4. Start CareerOS in another Terminal window:
+
+   ```bash
+   careeros
+   ```
+
+   Then open [http://127.0.0.1:8000](http://127.0.0.1:8000). The default bind address is loopback, so other devices cannot reach the app.
+
+The first start creates `data/careeros.sqlite3`. Back up the `data/` folder to preserve your local profile, resumes, saved jobs, task history, and portfolio workspace.
+
+## Optional OpenAI planner
+
+1. Copy `.env.example` to `.env`.
+2. Add an OpenAI API key to `.env` as `OPENAI_API_KEY=...`.
+3. Restart CareerOS and choose OpenAI in Planner Corner or for an individual task.
+
+Choosing OpenAI as the default does not make an API request. Before every OpenAI task, CareerOS shows what information that task will send and asks you to confirm paid use. A failed or interrupted cloud task is never retried automatically; start a new task and confirm again if you want another request. API keys are read from `.env` or the process environment and are never stored in SQLite or returned by the settings API. Do not commit `.env`.
+
+## Job board configuration
+
+The app uses the public Arbeitnow job-board feed on a manual refresh. You can also configure public employer boards by comma-separated board IDs:
+
+```dotenv
+CAREEROS_GREENHOUSE_BOARDS=acme,example-company
+CAREEROS_LEVER_SITES=another-company
+```
+
+The connectors fetch public board listings without credentials. Feed refresh sends only your search filters; it never sends your profile or resume. If a feed is unavailable, cached listings remain searchable.
+
+## Data and safety
+
+- Profiles, resume text, saved listings, and task records live in the local SQLite database.
+- Portfolio proposals are staged under `data/portfolio/.staging/`; approved files can only be applied below `data/portfolio/<project-id>/`.
+- The portfolio worker stores proposed programs as text and does not run them or invoke a shell.
+- Application approval only permits a local Markdown export; it does not submit or send anything.
+- CareerOS has no account, cloud sync, or paid job-board service.
+
+## Tests
+
+Run the suite with:
+
+```bash
+pytest -q
+```
+
+Tests use a temporary SQLite database, a fake planner, and mocked job feeds. They do not call Ollama, OpenAI, or live job sites.
+
+## Configuration
+
+Copy `.env.example` to `.env` to customize settings. The supported variables are:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CAREEROS_DATA_DIR` | `data` | Local database and portfolio folder |
+| `CAREEROS_HOST` | `127.0.0.1` | Loopback bind address |
+| `CAREEROS_PORT` | `8000` | Local web port |
+| `CAREEROS_WORKER_ENABLED` | `true` | Start the task worker with the app |
+| `CAREEROS_PLANNER_PROVIDER` | `ollama` | Initial planner selection |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama address |
+| `OLLAMA_MODEL` | `qwen2.5:1.5b` | Local model tag |
+| `OPENAI_API_KEY` | unset | Optional API credential for GPT-6 Luna |
+| `CAREEROS_GREENHOUSE_BOARDS` | empty | Optional public Greenhouse board IDs |
+| `CAREEROS_LEVER_SITES` | empty | Optional public Lever site IDs |
+
+CareerOS rejects non-loopback bind addresses to keep the single-user MVP local.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
