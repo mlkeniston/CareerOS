@@ -5,6 +5,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 const officeRenderer = new OfficeRenderer($("#office-canvas"), {
   onSelect: selection => selectOffice(selection),
+  onHover: (workerId, position) => renderWorkerTooltip(workerId, position),
 });
 officeRenderer.update({ workers: [], counts: {} });
 let officePollTimer = null;
@@ -48,8 +49,13 @@ function notify(message) {
 
 function go(station) {
   const home = station === "home" || !$("#" + station + "-screen");
+  document.body.classList.toggle("office-active", home);
+  document.body.classList.toggle("station-active", !home);
   $("#home-screen").hidden = !home;
   $$(".station-screen").forEach(screen => { screen.hidden = home || screen.id !== station + "-screen"; });
+  hideWorkerTooltip();
+  closeWorkerRoster();
+  if (home) window.requestAnimationFrame(() => officeRenderer.resize());
   if (home) {
     refreshOverview();
   } else if (station === "jobs") {
@@ -192,19 +198,24 @@ async function refreshOffice() {
       officeRenderer.setSelection(null);
     }
     officeRenderer.update(snapshot);
-    $("#office-connection").textContent = "LIVE · LOCAL";
+    $("#office-connection").textContent = "LIVE";
     $("#office-connection").dataset.state = "live";
     renderWorkerRoster(snapshot.workers || []);
     renderOfficeActivity(snapshot.activity || []);
     renderOfficeCounts(snapshot);
     renderAutopilot(snapshot.autopilot || {});
     renderInspector();
+    if (!$("#worker-tooltip").hidden) renderWorkerTooltip(officeRenderer.hoveredWorker, officeRenderer.hoverPosition);
     return true;
   } catch {
-    $("#office-connection").textContent = state.office ? "STALE · RETRYING" : "OFFLINE · RETRYING";
+    $("#office-connection").textContent = state.office ? "STALE" : "OFFLINE";
     $("#office-connection").dataset.state = "offline";
     $("#autopilot-indicator").textContent = state.office ? "Showing last local update" : "Local queue is unavailable";
     $("#autopilot-schedule").textContent = "CareerOS will reconnect automatically.";
+    if (!state.office) {
+      $("#autopilot-toggle").textContent = "AUTO —";
+      $("#autopilot-toggle").setAttribute("aria-label", "Automatic discovery status unavailable");
+    }
     return false;
   } finally {
     officeRefreshing = false;
@@ -277,11 +288,12 @@ function renderAutopilot(autopilot) {
   const enabled = Boolean(autopilot.enabled);
   const indicator = $("#autopilot-indicator");
   indicator.dataset.enabled = String(enabled);
-  indicator.textContent = enabled ? "Autopilot is on" : "Autopilot is paused";
+  indicator.textContent = enabled ? "AUTO" : "PAUSED";
   const toggle = $("#autopilot-toggle");
   toggle.disabled = autopilotUpdating;
   toggle.setAttribute("aria-pressed", String(enabled));
-  toggle.textContent = enabled ? "Pause discovery" : "Resume discovery";
+  toggle.textContent = enabled ? "AUTO ON" : "AUTO OFF";
+  toggle.setAttribute("aria-label", enabled ? "Pause automatic discovery" : "Resume automatic discovery");
   const schedule = $("#autopilot-schedule");
   if (!enabled) schedule.textContent = "Automatic listing discovery is paused. Existing queued work can finish.";
   else if (autopilot.last_error) schedule.textContent = `The last scan had a problem. CareerOS will retry. ${autopilot.last_error}`;
@@ -305,10 +317,38 @@ const WORKER_STATIONS = {
 
 function selectOffice(selection) {
   if (!selection || !["worker", "station"].includes(selection.type)) return;
+  closeWorkerRoster();
+  hideWorkerTooltip();
   state.officeSelection = selection;
   officeRenderer.setSelection(selection);
   renderWorkerRoster(state.office?.workers || []);
   renderInspector();
+}
+
+function hideWorkerTooltip() {
+  $("#worker-tooltip").hidden = true;
+}
+
+function renderWorkerTooltip(workerId, position) {
+  const tooltip = $("#worker-tooltip");
+  const worker = (state.office?.workers || []).find(item => item.id === workerId);
+  if (!worker || !position) {
+    tooltip.hidden = true;
+    return;
+  }
+  $("#worker-tooltip-name").textContent = worker.department || worker.name || worker.id;
+  $("#worker-tooltip-task").textContent = worker.task_label || "Waiting for work";
+  const details = [formatStatus(worker.status).toUpperCase()];
+  if (worker.since) details.push(`${worker.status === "working" ? "WORKING" : "SINCE"} ${formatElapsed(worker.since)}`);
+  if (worker.task_id) details.push(`#${worker.task_id}`);
+  $("#worker-tooltip-meta").textContent = details.join("  /  ");
+  tooltip.className = `worker-tooltip status-${safeStatus(worker.status)}`;
+  tooltip.hidden = false;
+  const frame = $(".canvas-frame");
+  const maxX = Math.max(8, frame.clientWidth - tooltip.offsetWidth - 8);
+  const maxY = Math.max(8, frame.clientHeight - tooltip.offsetHeight - 8);
+  tooltip.style.left = `${Math.max(8, Math.min(position.x + 15, maxX))}px`;
+  tooltip.style.top = `${Math.max(8, Math.min(position.y + 12, maxY))}px`;
 }
 
 function renderInspector() {
@@ -405,6 +445,32 @@ $("#close-inspector").addEventListener("click", () => {
   officeRenderer.setSelection(null);
   renderInspector();
   renderWorkerRoster(state.office?.workers || []);
+});
+
+function closeWorkerRoster() {
+  const panel = $("#worker-roster-panel");
+  if (!panel) return;
+  panel.hidden = true;
+  $("#toggle-roster").setAttribute("aria-expanded", "false");
+}
+
+function toggleWorkerRoster() {
+  const panel = $("#worker-roster-panel");
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  $("#toggle-roster").setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    state.officeSelection = null;
+    officeRenderer.setSelection(null);
+    renderInspector();
+    $("#worker-roster").querySelector("button")?.focus();
+  }
+}
+
+$("#toggle-roster").addEventListener("click", toggleWorkerRoster);
+$("#close-roster").addEventListener("click", () => {
+  closeWorkerRoster();
+  $("#toggle-roster").focus();
 });
 
 $("#refresh-office-applications").addEventListener("click", loadOfficeApplications);

@@ -1,21 +1,21 @@
 export const LOGICAL_SIZE = Object.freeze({ width: 480, height: 270 });
 
 export const PALETTE = Object.freeze({
-  space: "#070a12",
-  nebula: "#58386f",
-  frame: "#b84853",
-  steel: "#1a202c",
-  wall: "#667181",
-  floor: "#111925",
-  grid: "#202a37",
-  light: "#e5edf4",
-  muted: "#8997a8",
-  cyan: "#5ad4e5",
-  green: "#83d69a",
-  amber: "#eab563",
-  purple: "#bf9ae8",
-  coral: "#ef7476",
-  red: "#ed6269",
+  space: "#070713",
+  nebula: "#5539a6",
+  frame: "#7654ff",
+  steel: "#18162d",
+  wall: "#443b70",
+  floor: "#11142b",
+  grid: "#252448",
+  light: "#ededff",
+  muted: "#a6a6ca",
+  cyan: "#43edff",
+  green: "#c3ff63",
+  amber: "#ffc95e",
+  purple: "#b879ff",
+  coral: "#ff55b5",
+  red: "#ff5c86",
 });
 
 export const ROOMS = Object.freeze([
@@ -56,14 +56,14 @@ export const WORKER_APPEARANCE = Object.freeze({
 });
 
 export const SPRITE_COLORS = Object.freeze({
-  H: "#352d43",
+  H: "#282144",
   S: "#f0bc91",
-  T: "#347b89",
-  C: "#65dfeb",
-  G: "#79d895",
-  A: "#efb355",
-  P: "#b995e0",
-  R: "#ee777a",
+  T: "#3d3872",
+  C: "#43edff",
+  G: "#c3ff63",
+  A: "#ffc95e",
+  P: "#b879ff",
+  R: "#ff55b5",
   ".": null,
 });
 

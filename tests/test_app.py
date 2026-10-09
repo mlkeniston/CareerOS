@@ -28,7 +28,9 @@ def test_office_and_stations_are_served(client):
     page = client.get("/").text
     assert "CareerOS" in page
     assert '<canvas id="office-canvas"' in page
-    assert 'aria-label="CareerOS office map' in page
+    assert 'aria-label="CareerOS pixel office.' in page
+    assert 'id="worker-tooltip"' in page
+    assert 'role="tooltip"' in page
     assert 'id="worker-roster"' in page
     assert 'id="task-inspector"' in page
     assert 'id="autopilot-toggle"' in page
@@ -38,12 +40,17 @@ def test_office_and_stations_are_served(client):
     assert 'data-station="portfolio"' in page
     assert client.get("/static/office-layout.js").status_code == 200
     assert "export class OfficeRenderer" in client.get("/static/office-renderer.js").text
+    assert 'data-station="settings"' in page
 
 
 def test_office_client_connects_live_workspace_and_accessible_controls(client):
     script = client.get("/static/app.js").text
     assert 'api("/api/workspace")' in script
     assert "officeRenderer.update(snapshot)" in script
+    assert "renderWorkerTooltip" in script
+    renderer = client.get("/static/office-renderer.js").text
+    assert 'addEventListener("pointermove"' in renderer
+    assert 'onHover(this.hoveredWorker, this.hoverPosition)' in renderer
     assert 'api("/api/autopilot"' in script
     assert "visibilitychange" in script
     assert "2000" in script

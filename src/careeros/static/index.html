@@ -3,61 +3,55 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#090d14">
+  <meta name="theme-color" content="#070713">
   <title>CareerOS — your office</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/office.css">
 </head>
-<body>
+<body class="office-active">
   <div class="app-shell">
     <header class="topbar">
-      <a class="brand" href="#home" aria-label="CareerOS home"><span class="brand-mark" aria-hidden="true">C</span><span>Career<span class="brand-strong">OS</span></span></a>
-      <div class="topbar-note"><span class="status-dot"></span><span>Saved on this Mac</span></div>
-      <button class="quiet-button" type="button" data-station="settings">Planner settings <span aria-hidden="true">↗</span></button>
+      <a class="brand" href="#home" data-station="home" aria-label="CareerOS home"><span class="brand-mark" aria-hidden="true">C</span><span>Career<span class="brand-strong">OS</span></span></a>
+      <div class="office-controls">
+        <div class="topbar-note"><span class="status-dot"></span><span id="office-connection">LOCAL · CONNECTING</span></div>
+        <span id="autopilot-indicator" class="autopilot-indicator visually-hidden" role="status">CONNECTING</span>
+        <button id="autopilot-toggle" class="office-button" type="button" aria-pressed="true" aria-label="Checking automatic discovery status" disabled>AUTO —</button>
+        <button id="toggle-roster" class="quiet-button team-toggle" type="button" aria-expanded="false" aria-controls="worker-roster-panel"><span aria-hidden="true">▦</span><span>Team</span></button>
+      </div>
     </header>
 
     <main>
       <section id="home-screen" class="home-screen office-home" aria-labelledby="welcome-title">
-        <header class="office-heading">
-          <div>
-            <p class="office-kicker">CAREEROS · LOCAL OPERATIONS</p>
-            <h1 id="welcome-title">Your team is at work.</h1>
-          </div>
-          <div class="autopilot-control">
-            <span id="autopilot-indicator" class="autopilot-indicator" role="status">Checking local workspace</span>
-            <button id="autopilot-toggle" class="office-button" type="button" aria-pressed="true" disabled>Pause discovery</button>
-          </div>
-        </header>
-        <p id="autopilot-schedule" class="autopilot-schedule">Connecting to this Mac…</p>
+        <h1 id="welcome-title" class="visually-hidden">CareerOS office</h1>
+        <p id="autopilot-schedule" class="visually-hidden">Connecting to this Mac…</p>
 
         <div class="office-grid">
-          <aside class="worker-panel" aria-labelledby="roster-heading">
+          <aside id="worker-roster-panel" class="worker-panel" aria-labelledby="roster-heading" hidden>
             <div class="office-section-head">
-              <span class="section-tag">TEAM</span>
-              <h2 id="roster-heading">Workers</h2>
+              <h2 id="roster-heading">Team</h2>
+              <button id="close-roster" class="inspector-close" type="button" aria-label="Close team">×</button>
             </div>
             <div id="worker-roster" role="list" aria-label="Worker status list">
               <p class="office-loading">Connecting to the local queue…</p>
             </div>
-            <button class="station-link" type="button" data-station="settings">Planner settings</button>
           </aside>
 
           <section class="map-panel" aria-labelledby="map-heading">
-            <div class="map-heading">
-              <div>
-                <span class="section-tag">OPERATIONS FLOOR</span>
-                <h2 id="map-heading">CareerOS station</h2>
-              </div>
-              <span id="office-connection" class="connection-state">LOCAL · THIS MAC</span>
-            </div>
+            <h2 id="map-heading" class="visually-hidden">CareerOS station</h2>
             <div class="canvas-frame">
-              <canvas id="office-canvas" role="img" tabindex="0" aria-label="CareerOS office map showing four connected rooms and the dispatch hub. Worker states are also listed in the accessible roster."></canvas>
+              <canvas id="office-canvas" role="img" tabindex="0" aria-label="CareerOS pixel office. Hover over a worker for its task, status, and timing. Click a worker or room for details."></canvas>
+              <div id="worker-tooltip" class="worker-tooltip" role="tooltip" hidden>
+                <strong id="worker-tooltip-name"></strong>
+                <span id="worker-tooltip-task"></span>
+                <small id="worker-tooltip-meta"></small>
+              </div>
             </div>
-            <nav class="station-nav" aria-label="Office departments">
-              <button type="button" data-station="jobs">Job Hunters</button>
-              <button type="button" data-station="resume">Resume Team</button>
-              <button type="button" data-station="applications">Application Team</button>
-              <button type="button" data-station="portfolio">Engineering Team</button>
+            <nav class="station-nav" aria-label="Office stations">
+              <button type="button" data-station="jobs"><span aria-hidden="true">⌕</span><span>Jobs</span></button>
+              <button type="button" data-station="resume"><span aria-hidden="true">▤</span><span>Resume</span></button>
+              <button type="button" data-station="applications"><span aria-hidden="true">▧</span><span>Drafts</span></button>
+              <button type="button" data-station="portfolio"><span aria-hidden="true">⌘</span><span>Build</span></button>
+              <button type="button" data-station="settings"><span aria-hidden="true">⚙</span><span>Planner</span></button>
             </nav>
           </section>
 
@@ -73,13 +67,13 @@
           </aside>
         </div>
 
-        <section class="operations-strip" aria-label="Live operations counts">
+        <section class="operations-strip" aria-label="Live operations counts" hidden>
           <article><span>Listings</span><strong id="saved-job-count">0</strong><small id="matched-job-count">0 technology matches</small></article>
           <article><span>Work approved</span><strong id="application-count">0</strong><small id="resume-count">0 resume versions</small></article>
           <article><span>Drafts to review</span><strong id="draft-review-count">0</strong><small id="proposal-review-count">0 proposals</small></article>
           <article><span>Local planner</span><strong id="model-state">Checking</strong><small id="model-name">Ollama</small></article>
         </section>
-        <section class="activity-panel" aria-labelledby="activity-heading">
+        <section class="activity-panel" aria-labelledby="activity-heading" hidden>
           <div class="office-section-head"><div><span class="section-tag">QUEUE LOG</span><h2 id="activity-heading">Recent work</h2></div><span class="connection-state">LOCAL TASK HISTORY</span></div>
           <ol id="office-activity" class="activity-list"><li class="activity-empty">Waiting for the local queue…</li></ol>
         </section>
@@ -145,6 +139,6 @@
       </form>
     </dialog>
   </div>
-  <script type="module" src="/static/app.js?v=office-autopilot"></script>
+  <script type="module" src="/static/app.js?v=office-neon"></script>
 </body>
 </html>
