@@ -28,6 +28,7 @@
             <button id="autopilot-toggle" class="office-button" type="button" aria-pressed="true" disabled>Pause discovery</button>
           </div>
         </header>
+        <p id="autopilot-schedule" class="autopilot-schedule">Connecting to this Mac…</p>
 
         <div class="office-grid">
           <aside class="worker-panel" aria-labelledby="roster-heading">
@@ -67,6 +68,8 @@
             </div>
             <h2 id="inspector-heading">Task details</h2>
             <p id="inspector-copy">Choose a worker to see its current queue state.</p>
+            <div id="inspector-meta" class="inspector-meta"></div>
+            <button id="inspector-open-station" class="button button-soft inspector-open" type="button" hidden>Open department</button>
           </aside>
         </div>
 
@@ -76,11 +79,15 @@
           <article><span>Drafts to review</span><strong id="draft-review-count">0</strong><small id="proposal-review-count">0 proposals</small></article>
           <article><span>Local planner</span><strong id="model-state">Checking</strong><small id="model-name">Ollama</small></article>
         </section>
+        <section class="activity-panel" aria-labelledby="activity-heading">
+          <div class="office-section-head"><div><span class="section-tag">QUEUE LOG</span><h2 id="activity-heading">Recent work</h2></div><span class="connection-state">LOCAL TASK HISTORY</span></div>
+          <ol id="office-activity" class="activity-list"><li class="activity-empty">Waiting for the local queue…</li></ol>
+        </section>
       </section>
 
       <section class="station-screen" id="applications-screen" hidden>
         <div class="screen-heading"><button class="back-link" data-station="home" type="button">← Office</button><p class="eyebrow">APPLICATION TEAM</p><h1>Draft review</h1><p>Application materials stay here for your review. CareerOS never submits them.</p></div>
-        <section class="panel"><div class="panel-title"><div><span class="panel-kicker">APPLICATIONS</span><h2>Your drafts</h2></div></div><div id="office-application-list" class="card-list"></div></section>
+        <section class="panel"><div class="panel-title"><div><span class="panel-kicker">APPLICATIONS</span><h2>Your drafts</h2></div><button id="refresh-office-applications" class="text-button" type="button">Refresh</button></div><div id="office-application-list" class="card-list"></div></section>
       </section>
 
       <section class="station-screen" id="jobs-screen" hidden>
@@ -138,6 +145,6 @@
       </form>
     </dialog>
   </div>
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v=office-autopilot"></script>
 </body>
 </html>

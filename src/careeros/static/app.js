@@ -1,13 +1,18 @@
 import { OfficeRenderer } from "./office-renderer.js";
 
-const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null };
+const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, office: null, officeSelection: null };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 const officeRenderer = new OfficeRenderer($("#office-canvas"), {
-  onSelect: selection => document.dispatchEvent(new CustomEvent("careeros:office-select", { detail: selection })),
+  onSelect: selection => selectOffice(selection),
 });
 officeRenderer.update({ workers: [], counts: {} });
-window.addEventListener("pagehide", () => officeRenderer.destroy(), { once: true });
+let officePollTimer = null;
+let officeRefreshing = false;
+window.addEventListener("pagehide", () => {
+  if (officePollTimer) window.clearInterval(officePollTimer);
+  officeRenderer.destroy();
+}, { once: true });
 
 function element(tag, className = "", text = "") {
   const node = document.createElement(tag);
@@ -53,6 +58,8 @@ function go(station) {
     loadResumeDesk();
   } else if (station === "portfolio") {
     loadProposals();
+  } else if (station === "applications") {
+    loadOfficeApplications();
   } else if (station === "settings") {
     loadSettings();
   }
@@ -169,12 +176,272 @@ $("#manual-job-form").addEventListener("submit", async event => {
 
 async function refreshOverview() {
   try {
-    const [jobs, resumes, applications] = await Promise.all([api("/api/jobs?saved=true&limit=500"), api("/api/resumes"), api("/api/applications")]);
-    $("#saved-job-count").textContent = jobs.length;
+    const [resumes] = await Promise.all([api("/api/resumes"), refreshOffice()]);
     $("#resume-count").textContent = resumes.length;
-    $("#application-count").textContent = applications.length;
   } catch { /* The station still explains what to do when there is no data. */ }
 }
+
+async function refreshOffice() {
+  if (document.visibilityState !== "visible" || officeRefreshing) return false;
+  officeRefreshing = true;
+  try {
+    const snapshot = await api("/api/workspace");
+    state.office = snapshot;
+    if (state.officeSelection?.type === "worker" && !(snapshot.workers || []).some(worker => worker.id === state.officeSelection.id)) {
+      state.officeSelection = null;
+      officeRenderer.setSelection(null);
+    }
+    officeRenderer.update(snapshot);
+    $("#office-connection").textContent = "LIVE · LOCAL";
+    $("#office-connection").dataset.state = "live";
+    renderWorkerRoster(snapshot.workers || []);
+    renderOfficeActivity(snapshot.activity || []);
+    renderOfficeCounts(snapshot);
+    renderAutopilot(snapshot.autopilot || {});
+    renderInspector();
+    return true;
+  } catch {
+    $("#office-connection").textContent = state.office ? "STALE · RETRYING" : "OFFLINE · RETRYING";
+    $("#office-connection").dataset.state = "offline";
+    $("#autopilot-indicator").textContent = state.office ? "Showing last local update" : "Local queue is unavailable";
+    $("#autopilot-schedule").textContent = "CareerOS will reconnect automatically.";
+    return false;
+  } finally {
+    officeRefreshing = false;
+  }
+}
+
+function renderWorkerRoster(workers) {
+  const list = $("#worker-roster");
+  if (!workers.length) {
+    list.replaceChildren(element("p", "roster-empty", "No office workers are available yet."));
+    return;
+  }
+  Array.from(list.children).forEach(child => { if (!child.querySelector("[data-worker-id]")) child.remove(); });
+  const existing = new Map(Array.from(list.querySelectorAll("[data-worker-id]"), button => [button.dataset.workerId, button]));
+  for (const worker of workers) {
+    let button = existing.get(worker.id);
+    if (button) existing.delete(worker.id);
+    else {
+      const slot = element("div", "roster-slot");
+      slot.setAttribute("role", "listitem");
+      button = element("button", "worker-entry");
+      button.type = "button";
+      button.dataset.workerId = worker.id;
+      button.addEventListener("click", () => selectOffice({ type: "worker", id: button.dataset.workerId }));
+      slot.append(button);
+      list.append(slot);
+    }
+    button.setAttribute("aria-pressed", String(state.officeSelection?.type === "worker" && state.officeSelection.id === worker.id));
+    const status = ["idle", "waiting", "paused", "working", "needs_review", "failed", "interrupted"].includes(worker.status) ? worker.status : "waiting";
+    const copy = element("span", "worker-copy");
+    copy.append(element("strong", "", worker.department || worker.id));
+    const taskText = worker.task_label || "Waiting for work";
+    const duration = status === "working" && worker.since ? ` · ${formatElapsed(worker.since)}` : "";
+    copy.append(element("small", "", taskText + duration));
+    button.replaceChildren(element("span", "worker-pixel", ""), copy, element("span", `worker-state ${status}`, formatStatus(status)));
+  }
+  for (const button of existing.values()) button.closest('[role="listitem"]')?.remove();
+}
+
+function renderOfficeActivity(activity) {
+  const list = $("#office-activity");
+  list.replaceChildren();
+  if (!activity.length) {
+    list.append(element("li", "activity-empty", "No tasks have been recorded yet. The first scheduled scan will appear here."));
+    return;
+  }
+  activity.slice(0, 8).forEach(item => {
+    const row = element("li", `activity-item activity-${safeStatus(item.status)}`);
+    const copy = element("span", "activity-copy");
+    copy.append(element("strong", "", item.label || "Task updated"));
+    copy.append(element("small", "", `${formatStatus(item.status)} · ${formatTimestamp(item.updated_at)}`));
+    row.append(element("span", "activity-mark", ""), copy);
+    list.append(row);
+  });
+}
+
+function renderOfficeCounts(snapshot) {
+  const counts = snapshot.counts || {};
+  $("#saved-job-count").textContent = formatCount(counts.jobs_found);
+  $("#matched-job-count").textContent = `${formatCount(counts.jobs_matched)} technology matches`;
+  $("#application-count").textContent = formatCount(counts.tasks_shipped);
+  $("#draft-review-count").textContent = formatCount(counts.drafts_to_review);
+  $("#proposal-review-count").textContent = `${formatCount(counts.proposals_to_review)} proposals`;
+  const model = snapshot.model || {};
+  $("#model-state").textContent = ({ ready: "Ready", offline: "Offline", model_missing: "Model needed" })[model.state] || "Checking";
+  $("#model-name").textContent = model.autopilot_provider === "ollama" ? model.name || "Ollama" : "Ollama for auto work";
+}
+
+function renderAutopilot(autopilot) {
+  const enabled = Boolean(autopilot.enabled);
+  const indicator = $("#autopilot-indicator");
+  indicator.dataset.enabled = String(enabled);
+  indicator.textContent = enabled ? "Autopilot is on" : "Autopilot is paused";
+  const toggle = $("#autopilot-toggle");
+  toggle.disabled = autopilotUpdating;
+  toggle.setAttribute("aria-pressed", String(enabled));
+  toggle.textContent = enabled ? "Pause discovery" : "Resume discovery";
+  const schedule = $("#autopilot-schedule");
+  if (!enabled) schedule.textContent = "Automatic listing discovery is paused. Existing queued work can finish.";
+  else if (autopilot.last_error) schedule.textContent = `The last scan had a problem. CareerOS will retry. ${autopilot.last_error}`;
+  else schedule.textContent = autopilot.next_discovery_at ? `Next automatic listing scan · ${formatUntil(autopilot.next_discovery_at)}` : "Automatic listing discovery is enabled.";
+}
+
+const OFFICE_STATIONS = {
+  jobs: { title: "Job Hunters", target: "jobs", description: "Search technology roles and review the listings CareerOS found." },
+  resume: { title: "Resume Team", target: "resume", description: "Keep your profile and resume versions on this Mac." },
+  applications: { title: "Application Team", target: "applications", description: "Review application drafts. CareerOS never submits them." },
+  portfolio: { title: "Engineering Team", target: "portfolio", description: "Review staged project proposals before applying any files." },
+  settings: { title: "Dispatch", target: "settings", description: "Choose the local planner or explicitly configure optional cloud use." },
+};
+const WORKER_STATIONS = {
+  "job-hunter": "jobs",
+  "resume-analyst": "resume",
+  "application-prep": "applications",
+  "portfolio-engineer": "portfolio",
+  director: "settings",
+};
+
+function selectOffice(selection) {
+  if (!selection || !["worker", "station"].includes(selection.type)) return;
+  state.officeSelection = selection;
+  officeRenderer.setSelection(selection);
+  renderWorkerRoster(state.office?.workers || []);
+  renderInspector();
+}
+
+function renderInspector() {
+  const panel = $("#task-inspector");
+  const heading = $("#inspector-heading");
+  const copy = $("#inspector-copy");
+  const meta = $("#inspector-meta");
+  const open = $("#inspector-open-station");
+  const selection = state.officeSelection;
+  if (!selection) {
+    panel.hidden = true;
+    return;
+  }
+  let target;
+  meta.replaceChildren();
+  if (selection.type === "worker") {
+    const worker = (state.office?.workers || []).find(item => item.id === selection.id);
+    if (!worker) { panel.hidden = true; return; }
+    heading.textContent = worker.department || worker.id;
+    copy.textContent = worker.task_label || "Waiting for work";
+    target = OFFICE_STATIONS[WORKER_STATIONS[worker.id]];
+    addInspectorMeta(meta, "Status", formatStatus(worker.status));
+    if (worker.task_id) addInspectorMeta(meta, "Queue task", worker.task_id);
+    if (worker.since) addInspectorMeta(meta, "Working for", formatElapsed(worker.since));
+  } else {
+    target = OFFICE_STATIONS[selection.id];
+    if (!target) { panel.hidden = true; return; }
+    heading.textContent = target.title;
+    copy.textContent = target.description;
+    const workers = (state.office?.workers || []).filter(worker => WORKER_STATIONS[worker.id] === selection.id);
+    if (workers.length) addInspectorMeta(meta, "Team status", workers.map(worker => `${worker.department}: ${formatStatus(worker.status)}`).join(" · "));
+  }
+  open.hidden = !target;
+  if (target) {
+    open.textContent = `Open ${target.title}`;
+    open.dataset.station = target.target;
+  } else {
+    delete open.dataset.station;
+  }
+  panel.hidden = false;
+}
+
+function addInspectorMeta(root, label, value) {
+  const row = element("div");
+  row.append(element("span", "", label), element("strong", "", value));
+  root.append(row);
+}
+
+function formatElapsed(value) {
+  const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1000));
+  if (!Number.isFinite(seconds)) return "just now";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
+}
+
+function formatUntil(value) {
+  const seconds = Math.max(0, Math.floor((Date.parse(value) - Date.now()) / 1000));
+  if (!Number.isFinite(seconds)) return "scheduled";
+  if (seconds < 60) return "in less than a minute";
+  if (seconds < 3600) return `in ${Math.floor(seconds / 60)}m`;
+  return `in ${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
+}
+
+function formatTimestamp(value) {
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "recently";
+}
+
+function formatCount(value) { return Number.isInteger(value) ? String(value) : "0"; }
+function safeStatus(value) { return ["queued", "running", "completed", "needs_review", "failed", "interrupted"].includes(value) ? value : "queued"; }
+function formatStatus(value) { return String(value || "waiting").replaceAll("_", " "); }
+
+let autopilotUpdating = false;
+$("#autopilot-toggle").addEventListener("click", async () => {
+  if (!state.office || autopilotUpdating) return;
+  const enabled = !state.office.autopilot.enabled;
+  autopilotUpdating = true;
+  $("#autopilot-toggle").disabled = true;
+  try {
+    await api("/api/autopilot", { method: "PUT", body: { enabled } });
+    await refreshOffice();
+    notify(enabled ? "Automatic listing discovery resumed" : "Automatic listing discovery paused");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    autopilotUpdating = false;
+    if (state.office) renderAutopilot(state.office.autopilot || {});
+  }
+});
+
+$("#close-inspector").addEventListener("click", () => {
+  state.officeSelection = null;
+  officeRenderer.setSelection(null);
+  renderInspector();
+  renderWorkerRoster(state.office?.workers || []);
+});
+
+$("#refresh-office-applications").addEventListener("click", loadOfficeApplications);
+
+async function loadOfficeApplications() {
+  const list = $("#office-application-list");
+  try {
+    const applications = await api("/api/applications");
+    list.replaceChildren();
+    if (!applications.length) list.append(element("p", "empty-state", "The application worker will place reviewable drafts here when a saved role and resume match."));
+    applications.forEach(application => {
+      const card = element("button", "application-card", "");
+      card.type = "button";
+      const row = element("div", "list-card-top");
+      row.append(element("p", "list-card-title", application.job_title || "Application draft"), element("span", `state-label ${application.status === "failed" ? "failed" : ""}`, formatStatus(application.status)));
+      card.append(row, element("p", "list-card-sub", `Updated ${formatTimestamp(application.updated_at)}`));
+      card.addEventListener("click", () => { go("resume"); loadApplication(application.id); });
+      list.append(card);
+    });
+  } catch (error) {
+    list.replaceChildren(element("p", "empty-state", error.message));
+  }
+}
+
+function startOfficePolling() {
+  if (document.visibilityState !== "visible") return;
+  if (officePollTimer) window.clearInterval(officePollTimer);
+  refreshOffice();
+  officePollTimer = window.setInterval(refreshOffice, 2000);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") startOfficePolling();
+  else if (officePollTimer) { window.clearInterval(officePollTimer); officePollTimer = null; }
+});
+
+$("#close-inspector").setAttribute("aria-label", "Close selected details");
 
 function splitList(text) { return text.split(",").map(value => value.trim()).filter(Boolean).slice(0, 20); }
 
@@ -589,3 +856,4 @@ $("#save-provider").addEventListener("click", async () => {
 
 loadSettings();
 refreshOverview();
+startOfficePolling();

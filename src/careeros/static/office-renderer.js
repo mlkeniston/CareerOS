@@ -60,6 +60,11 @@ export class OfficeRenderer {
     this.draw(0);
   }
 
+  setSelection(selection) {
+    this.selection = selection && ["worker", "station"].includes(selection.type) ? selection : null;
+    this.draw(0);
+  }
+
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
