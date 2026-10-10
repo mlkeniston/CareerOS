@@ -9,6 +9,7 @@ const {
   DOORWAYS,
   ROOMS,
   STATIONS,
+  CONVEYOR_NETWORK,
   WORKER_APPEARANCE,
   WORKER_STATIONS,
   SPRITE_COLORS,
@@ -118,6 +119,36 @@ test("worker destinations and clickable desk centers use the isometric map", () 
     assert.equal(findStationAt(station.position.x, station.position.y), station);
   }
   assert.equal(STATIONS.find(item => item.room === "dispatch").selectionId, "settings");
+});
+
+test("the connected conveyor network reaches every station and joins through Dispatch", () => {
+  const stationIds = CONVEYOR_NETWORK.flatMap(lane => lane.stationIds);
+  assert.equal(new Set(stationIds).size, stationIds.length, "each station should appear once in the network");
+  assert.deepEqual(new Set(stationIds), new Set(STATIONS.map(item => item.trackId)));
+  const liesOnSegment = (point, start, end) => {
+    const epsilon = 1e-8;
+    const between = (value, a, b) => value >= Math.min(a, b) - epsilon && value <= Math.max(a, b) + epsilon;
+    const horizontal = Math.abs(start.row - end.row) < epsilon
+      && Math.abs(point.row - start.row) < epsilon && between(point.col, start.col, end.col);
+    const vertical = Math.abs(start.col - end.col) < epsilon
+      && Math.abs(point.col - start.col) < epsilon && between(point.row, start.row, end.row);
+    return horizontal || vertical;
+  };
+  for (const station of STATIONS) {
+    const center = { col: station.cell.col, row: station.cell.row + 0.78 };
+    const connected = CONVEYOR_NETWORK.some(lane => lane.waypoints.slice(1).some((end, index) => (
+      liesOnSegment(center, lane.waypoints[index], end)
+    )));
+    assert.ok(connected, `${station.label} should sit directly on a conveyor route`);
+  }
+
+  const upper = CONVEYOR_NETWORK.find(lane => lane.id === "upper-run");
+  const lower = CONVEYOR_NETWORK.find(lane => lane.id === "lower-run");
+  const spine = CONVEYOR_NETWORK.find(lane => lane.id === "dispatch-spine");
+  const samePoint = (a, b) => a.col === b.col && a.row === b.row;
+  assert.ok(upper.waypoints.some(point => samePoint(point, spine.waypoints[0])));
+  assert.ok(lower.waypoints.some(point => samePoint(point, spine.waypoints.at(-1))));
+  assert.ok(spine.stationIds.some(id => STATIONS.find(item => item.trackId === id)?.room === "dispatch"));
 });
 
 test("worker sprites use a dense pixel grid with extra shade and highlight colors", () => {

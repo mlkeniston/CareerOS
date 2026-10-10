@@ -7,18 +7,28 @@ const rendererSource = await readFile(new URL("../src/careeros/static/office-ren
 const layoutUrl = `data:text/javascript;base64,${Buffer.from(layoutSource).toString("base64")}`;
 const rendererModule = rendererSource.replace('from "./office-layout.js"', `from "${layoutUrl}"`);
 const { OfficeRenderer } = await import(`data:text/javascript;base64,${Buffer.from(rendererModule).toString("base64")}`);
-const { FLOOR_CELLS, PALETTE, STATIONS, WORKER_APPEARANCE, WORKER_DISPLAY_SCALE } = await import(layoutUrl);
+const { CONVEYOR_NETWORK, FLOOR_CELLS, PALETTE, STATIONS, WORKER_APPEARANCE, WORKER_DISPLAY_SCALE } = await import(layoutUrl);
 
 function canvasHarness() {
   const filledStyles = [];
   const rectStyles = [];
+  const rectCalls = [];
+  const linearGradients = [];
   const listeners = new Map();
   let context;
   context = new Proxy({
     createRadialGradient: () => ({ addColorStop() {} }),
+    createLinearGradient: (...args) => {
+      const gradient = { args, stops: [], addColorStop(offset, color) { this.stops.push({ offset, color }); } };
+      linearGradients.push(gradient);
+      return gradient;
+    },
     measureText: value => ({ width: value.length * 3 }),
     fill: () => { filledStyles.push(context.fillStyle); },
-    fillRect: () => { rectStyles.push(context.fillStyle); },
+    fillRect: (...args) => {
+      rectStyles.push(context.fillStyle);
+      rectCalls.push({ style: context.fillStyle, x: args[0], y: args[1], width: args[2], height: args[3] });
+    },
   }, {
     get(target, key) {
       if (key in target) return target[key];
@@ -40,7 +50,7 @@ function canvasHarness() {
     setPointerCapture() {},
     releasePointerCapture() {},
   };
-  return { canvas, filledStyles, rectStyles, listeners };
+  return { canvas, filledStyles, rectStyles, rectCalls, linearGradients, listeners };
 }
 
 function withReducedMotion(callback) {
@@ -59,16 +69,44 @@ function withReducedMotion(callback) {
   }
 }
 
-test("isometric renderer fills every floor tile and gives each station a conveyor", () => {
+test("renderer draws the connected conveyor lanes over an atmospheric backdrop", () => {
   withReducedMotion(() => {
-    const { canvas, filledStyles } = canvasHarness();
+    const { canvas, filledStyles, linearGradients } = canvasHarness();
     new OfficeRenderer(canvas).update({ workers: [], counts: {} });
     const floorMaterials = new Set(FLOOR_CELLS.map(cell => cell.material));
     const filledFloorTiles = filledStyles.filter(color => floorMaterials.has(color)).length;
     assert.ok(filledFloorTiles >= FLOOR_CELLS.length * 0.7,
       `expected visible filled floor tiles for the whole isometric map; got ${filledFloorTiles} of ${FLOOR_CELLS.length}`);
-    assert.ok(filledStyles.filter(color => color === PALETTE.conveyor).length >= STATIONS.length,
-      "every station should have one rendered conveyor belt");
+    assert.ok(filledStyles.filter(color => color === PALETTE.conveyor).length >= CONVEYOR_NETWORK.length,
+      "all conveyor routes should have a rendered top surface");
+    assert.ok(linearGradients.length > 0, "the office should sit against a layered colored backdrop");
+  });
+});
+
+test("an active task moves one parcel between its worker station and the next station", () => {
+  withReducedMotion(() => {
+    const { canvas, rectCalls } = canvasHarness();
+    const renderer = new OfficeRenderer(canvas);
+    const working = {
+      id: "job-hunter",
+      name: "Job Hunter",
+      color: "cyan",
+      status: "working",
+      station_id: "job-hunters-01",
+      task_id: "task-123",
+    };
+    renderer.update({ workers: [working], counts: {} });
+    const firstPosition = rectCalls.filter(call => call.style === PALETTE.parcel).at(-1)?.x;
+    renderer.draw(500);
+    const nextPosition = rectCalls.filter(call => call.style === PALETTE.parcel).at(-1)?.x;
+    assert.notEqual(firstPosition, undefined, "active work should display a parcel");
+    assert.notEqual(nextPosition, firstPosition, "the parcel should move over time along the belt");
+
+    const parcelCountBeforeStop = rectCalls.filter(call => call.style === PALETTE.parcel).length;
+    renderer.update({ workers: [{ ...working, status: "needs_review" }], counts: {} });
+    assert.equal(rectCalls.filter(call => call.style === PALETTE.parcel).length, parcelCountBeforeStop,
+      "the parcel should disappear when the task is no longer running");
+    renderer.destroy();
   });
 });
 

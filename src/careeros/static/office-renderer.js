@@ -1,6 +1,7 @@
 import {
   DOORWAYS,
   DOORWAY_EDGES,
+  CONVEYOR_NETWORK,
   FLOOR_CELLS,
   ISO_VIEW,
   LOGICAL_SIZE,
@@ -237,16 +238,49 @@ export class OfficeRenderer {
   draw(timestamp) {
     const ctx = this.ctx;
     ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = PALETTE.space;
-    ctx.fillRect(0, 0, LOGICAL_SIZE.width, LOGICAL_SIZE.height);
+    this.drawAtmosphericBackdrop();
     this.drawDustHaze();
     this.drawDustMotes();
     this.drawIsoFloor();
     this.drawRoomSigns();
     this.drawDoorwayMarks();
     this.drawRoomCounters();
+    this.drawConveyorNetwork(timestamp);
     this.drawWorldObjects(timestamp);
     this.drawOuterFrame();
+  }
+
+  drawAtmosphericBackdrop() {
+    const ctx = this.ctx;
+    const sky = ctx.createLinearGradient(0, 0, 0, LOGICAL_SIZE.height);
+    sky.addColorStop(0, PALETTE.space);
+    sky.addColorStop(0.42, "#172728");
+    sky.addColorStop(0.78, "#131b1d");
+    sky.addColorStop(1, "#110f19");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, LOGICAL_SIZE.width, LOGICAL_SIZE.height);
+
+    const previousAlpha = ctx.globalAlpha ?? 1;
+    ctx.globalAlpha = 0.52;
+    const skyline = [
+      { x: 8, width: 22, height: 31 }, { x: 35, width: 30, height: 46 },
+      { x: 72, width: 18, height: 25 }, { x: 99, width: 27, height: 39 },
+      { x: 480, width: 19, height: 28 }, { x: 505, width: 31, height: 47 },
+      { x: 542, width: 22, height: 34 }, { x: 570, width: 24, height: 43 },
+    ];
+    for (let building = 0; building < skyline.length; building += 1) {
+      const tower = skyline[building];
+      const top = 58 - tower.height;
+      ctx.fillStyle = building % 2 ? "#10171c" : "#111b1d";
+      ctx.fillRect(tower.x, top, tower.width, tower.height);
+      ctx.fillStyle = building % 3 === 0 ? "#a5583b" : "#286e70";
+      ctx.fillRect(tower.x + tower.width / 2, top - 3, 2, 3);
+      for (let window = 0; window < 3; window += 1) {
+        ctx.fillStyle = window === building % 3 ? "rgba(255, 201, 94, .42)" : "rgba(67, 237, 255, .2)";
+        ctx.fillRect(tower.x + 4 + window * 6, top + 8 + (building % 2) * 3, 2, 2);
+      }
+    }
+    ctx.globalAlpha = previousAlpha;
   }
 
   drawDustHaze() {
@@ -498,12 +532,86 @@ export class OfficeRenderer {
       ...PROPS.map(prop => ({ type: "prop", value: prop, depth: this.project(prop.col, prop.row).y })),
       ...STATIONS.map(station => ({ type: "station", value: station, depth: this.project(station.cell.col, station.cell.row).y + 4 })),
       ...[...this.actors.values()].map(actor => ({ type: "actor", value: actor, depth: this.project(actor.col, actor.row).y })),
+      ...this.activeConveyorParcels(timestamp).map(parcel => ({
+        type: "parcel",
+        value: parcel,
+        depth: this.project(parcel.col, parcel.row).y + 1,
+      })),
     ].sort((a, b) => a.depth - b.depth);
     for (const item of objects) {
       if (item.type === "prop") this.drawProp(item.value);
       else if (item.type === "station") this.drawStation(item.value, timestamp);
+      else if (item.type === "parcel") this.drawParcel(item.value);
       else this.drawActor(item.value, timestamp);
     }
+  }
+
+  activeConveyorParcels(timestamp) {
+    return (this.snapshot?.workers || []).flatMap(worker => {
+      if (worker.status !== "working" || !worker.task_id) return [];
+      const source = STATIONS.find(item => item.workerStationId === worker.station_id);
+      if (!source) return [];
+      const lane = CONVEYOR_NETWORK.find(item => item.stationIds.includes(source.trackId));
+      if (!lane) return [];
+      const sourceIndex = lane.stationIds.indexOf(source.trackId);
+      const destination = STATIONS.find(item => item.trackId === lane.stationIds[sourceIndex + 1]);
+      if (!destination) return [];
+
+      const phase = taskPhase(worker.task_id, timestamp, 3200);
+      const rowOffset = 0.78;
+      return [{
+        col: source.cell.col + (destination.cell.col - source.cell.col) * phase,
+        row: source.cell.row + rowOffset
+          + ((destination.cell.row + rowOffset) - (source.cell.row + rowOffset)) * phase,
+        color: PALETTE[worker.color] || PALETTE[WORKER_APPEARANCE[worker.id]?.color] || PALETTE.cyan,
+      }];
+    });
+  }
+
+  drawConveyorNetwork(timestamp) {
+    const ctx = this.ctx;
+    const scale = this.project.scale;
+    const rollerPhase = this.reducedMotion ? 0 : (timestamp * 0.003) % (7 * scale);
+    for (const lane of CONVEYOR_NETWORK) {
+      for (let index = 0; index < lane.waypoints.length - 1; index += 1) {
+        const start = this.project(lane.waypoints[index].col, lane.waypoints[index].row);
+        const end = this.project(lane.waypoints[index + 1].col, lane.waypoints[index + 1].row);
+        const length = Math.hypot(end.x - start.x, end.y - start.y);
+        if (!length) continue;
+        drawPolygon(ctx, segmentBand(start, end, 0, 1, 6 * scale), "#1d2422");
+        drawPolygon(ctx, segmentBand(start, end, 0, 1, 4.7 * scale), "#8a7450");
+        drawPolygon(ctx, segmentBand(start, end, 0, 1, 4 * scale), PALETTE.conveyor);
+        drawPolygon(ctx, segmentBand(start, end, 0, 1, 2.9 * scale), "#25302e");
+
+        const spacing = 8 * scale;
+        for (let distance = rollerPhase; distance < length; distance += spacing) {
+          const position = distance / length;
+          const slatLength = Math.min(2.2 * scale / length, 1 - position);
+          if (slatLength <= 0) continue;
+          const slatColor = Math.round(distance / spacing) % 2 === 0 ? "#a59b79" : "#687469";
+          drawPolygon(ctx, segmentBand(start, end, position, position + slatLength, 2.55 * scale), slatColor);
+        }
+      }
+    }
+
+    for (const junction of [{ col: 8, row: 1.78 }, { col: 8, row: 7.78 }]) {
+      this.drawGroundPatch(junction.col, junction.row, 0.48, 0.48, "#8a7450");
+      this.drawGroundPatch(junction.col, junction.row, 0.38, 0.38, PALETTE.conveyor);
+    }
+  }
+
+  drawParcel(parcel) {
+    const point = this.project(parcel.col, parcel.row);
+    const scale = this.project.scale;
+    const x = Math.round(point.x);
+    const y = Math.round(point.y - 2.5 * scale);
+    drawPixelShadow(this.ctx, x, y + 5 * scale, 8 * scale, 2 * scale);
+    this.ctx.fillStyle = "#171e1c";
+    this.ctx.fillRect(x - 3 * scale, y, 6 * scale, 5 * scale);
+    this.ctx.fillStyle = PALETTE.parcel;
+    this.ctx.fillRect(x - 3 * scale, y, 6 * scale, 1.2 * scale);
+    this.ctx.fillStyle = parcel.color;
+    this.ctx.fillRect(x - 2 * scale, y + 2 * scale, 4 * scale, 2 * scale);
   }
 
   drawStation(station, timestamp) {
@@ -520,7 +628,6 @@ export class OfficeRenderer {
 
     drawPixelShadow(ctx, x, y + 4, 16, 4);
     this.drawGroundPrism(station.cell.col, station.cell.row + 0.28, 25, 12, 6, "#817a60", "#4b4a3e", "#383a33");
-    this.drawConveyor(station, timestamp);
     ctx.fillStyle = "#262b27";
     ctx.fillRect(x - 6, y - 10, 12, 8);
     ctx.fillStyle = "#8e8767";
@@ -576,30 +683,6 @@ export class OfficeRenderer {
       ctx.lineWidth = 1;
       const size = 13 * this.project.scale;
       ctx.strokeRect(x - size, y - 15 * this.project.scale, size * 2, size * 2);
-    }
-  }
-
-  drawConveyor(station, timestamp) {
-    const { col } = station.cell;
-    const row = station.cell.row + 0.78;
-    const center = this.project(col, row);
-    const scale = this.project.scale;
-    drawPixelShadow(this.ctx, center.x, center.y + 1, 13 * scale, 2 * scale);
-    this.drawGroundPrism(col, row, 22, 8, 2, PALETTE.conveyor, "#29312e", "#202722");
-
-    for (const edge of [-0.19, 0.19]) {
-      const start = this.project(col - 0.29, row + edge);
-      const end = this.project(col + 0.29, row + edge);
-      drawPolygon(this.ctx, segmentBand(start, end, 0, 1, 0.8 * scale), "#a27e53");
-    }
-
-    const phase = this.reducedMotion ? 0 : ((timestamp / 1100) % 1) * 0.12;
-    for (let roller = 0; roller < 4; roller += 1) {
-      const offset = ((roller * 0.16 + phase) % 0.52) - 0.26;
-      const start = this.project(col + offset, row - 0.15);
-      const end = this.project(col + offset, row + 0.15);
-      const tone = roller % 2 === 0 ? "#a9a184" : "#737967";
-      drawPolygon(this.ctx, segmentBand(start, end, 0, 1, 0.8 * scale), tone);
     }
   }
 
@@ -907,6 +990,12 @@ function drawPixelShadow(ctx, x, y, width, depth) {
     const inset = Math.abs(row - Math.floor(depth / 2));
     ctx.fillRect(Math.round(x - width / 2 + inset), Math.round(y + row), Math.max(1, width - inset * 2), 1);
   }
+}
+
+function taskPhase(taskId, timestamp, duration) {
+  let hash = 0;
+  for (const character of String(taskId)) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return ((Math.max(0, timestamp) + hash % duration) % duration) / duration;
 }
 
 function lighten(hex, amount) {

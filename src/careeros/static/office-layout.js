@@ -66,6 +66,7 @@ export const PALETTE = Object.freeze({
   frame: "#7958d8",
   steel: "#29302c",
   conveyor: "#354a46",
+  parcel: "#ffd778",
   wall: "#5b5a4b",
   floor: "#41443a",
   grid: "#555548",
@@ -149,6 +150,7 @@ function station(room, col, row, label, workerStationId = null, workerCell = nul
   const position = projectIso(col, row);
   return {
     id: room,
+    trackId: `${room}-${col}-${row}`,
     room,
     selectionId: room === "dispatch" ? "settings" : room,
     label,
@@ -178,6 +180,38 @@ export const STATIONS = Object.freeze([
   station("portfolio", 13, 7, "TEST BENCH", "engineering-team-01", { col: 13, row: 8 }, "workbench"),
   station("portfolio", 16, 7, "STAGING", null, null, "workbench"),
   station("dispatch", 8, 4, "QUEUE ROUTER", "dispatch-01", { col: 8, row: 5 }, "console"),
+]);
+
+function conveyorLane(id, waypoints, stationIds) {
+  return Object.freeze({
+    id,
+    waypoints: Object.freeze(waypoints.map(point => Object.freeze(point))),
+    stationIds: Object.freeze(stationIds),
+  });
+}
+
+export const CONVEYOR_NETWORK = Object.freeze([
+  conveyorLane("upper-run", [
+    { col: 0.45, row: 1.78 },
+    { col: 8, row: 1.78 },
+    { col: 17.55, row: 1.78 },
+  ], [
+    "jobs-1-1", "jobs-3-1", "jobs-5-1",
+    "resume-7-1", "resume-9-1", "resume-11-1",
+    "outreach-13-1", "outreach-15-1", "outreach-17-1",
+  ]),
+  conveyorLane("dispatch-spine", [
+    { col: 8, row: 1.78 },
+    { col: 8, row: 7.78 },
+  ], ["dispatch-8-4"]),
+  conveyorLane("lower-run", [
+    { col: 0.45, row: 7.78 },
+    { col: 8, row: 7.78 },
+    { col: 16.55, row: 7.78 },
+  ], [
+    "applications-1-7", "applications-4-7", "applications-7-7",
+    "portfolio-10-7", "portfolio-13-7", "portfolio-16-7",
+  ]),
 ]);
 
 export function findStationAt(x, y, project = projectIso) {
