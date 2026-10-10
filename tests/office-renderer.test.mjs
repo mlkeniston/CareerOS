@@ -7,16 +7,18 @@ const rendererSource = await readFile(new URL("../src/careeros/static/office-ren
 const layoutUrl = `data:text/javascript;base64,${Buffer.from(layoutSource).toString("base64")}`;
 const rendererModule = rendererSource.replace('from "./office-layout.js"', `from "${layoutUrl}"`);
 const { OfficeRenderer } = await import(`data:text/javascript;base64,${Buffer.from(rendererModule).toString("base64")}`);
-const { FLOOR_CELLS, STATIONS, WORKER_APPEARANCE, WORKER_DISPLAY_SCALE } = await import(layoutUrl);
+const { FLOOR_CELLS, PALETTE, STATIONS, WORKER_APPEARANCE, WORKER_DISPLAY_SCALE } = await import(layoutUrl);
 
 function canvasHarness() {
   const filledStyles = [];
+  const rectStyles = [];
   const listeners = new Map();
   let context;
   context = new Proxy({
     createRadialGradient: () => ({ addColorStop() {} }),
     measureText: value => ({ width: value.length * 3 }),
     fill: () => { filledStyles.push(context.fillStyle); },
+    fillRect: () => { rectStyles.push(context.fillStyle); },
   }, {
     get(target, key) {
       if (key in target) return target[key];
@@ -38,7 +40,7 @@ function canvasHarness() {
     setPointerCapture() {},
     releasePointerCapture() {},
   };
-  return { canvas, filledStyles, listeners };
+  return { canvas, filledStyles, rectStyles, listeners };
 }
 
 function withReducedMotion(callback) {
@@ -57,7 +59,7 @@ function withReducedMotion(callback) {
   }
 }
 
-test("isometric renderer fills every floor tile while drawing the office", () => {
+test("isometric renderer fills every floor tile and gives each station a conveyor", () => {
   withReducedMotion(() => {
     const { canvas, filledStyles } = canvasHarness();
     new OfficeRenderer(canvas).update({ workers: [], counts: {} });
@@ -65,6 +67,8 @@ test("isometric renderer fills every floor tile while drawing the office", () =>
     const filledFloorTiles = filledStyles.filter(color => floorMaterials.has(color)).length;
     assert.ok(filledFloorTiles >= FLOOR_CELLS.length * 0.7,
       `expected visible filled floor tiles for the whole isometric map; got ${filledFloorTiles} of ${FLOOR_CELLS.length}`);
+    assert.ok(filledStyles.filter(color => color === PALETTE.conveyor).length >= STATIONS.length,
+      "every station should have one rendered conveyor belt");
   });
 });
 
@@ -127,7 +131,7 @@ test("pointer cancellation preserves the next click and arrow keys orbit the off
 
 test("higher-density worker pixels keep the same clickable sprite footprint", () => {
   withReducedMotion(() => {
-    const { canvas } = canvasHarness();
+    const { canvas, rectStyles } = canvasHarness();
     const renderer = new OfficeRenderer(canvas);
     renderer.update({
       workers: [{ id: "job-hunter", name: "Job Hunter", color: "cyan", status: "idle", station_id: "job-hunters-01" }],
@@ -138,6 +142,7 @@ test("higher-density worker pixels keep the same clickable sprite footprint", ()
     assert.ok(Math.abs(actor.bounds.width - 22 * WORKER_DISPLAY_SCALE * renderer.project.scale) < 0.01);
     assert.ok(Math.abs(actor.bounds.height - 36 * WORKER_DISPLAY_SCALE * renderer.project.scale) < 0.01);
     assert.ok(appearance.sprite.length >= 70 && appearance.sprite[0].length >= 40);
+    assert.ok(rectStyles.includes("rgb(103, 255, 255)"), "worker silhouette should use a bright department-colored rim");
     renderer.destroy();
   });
 });

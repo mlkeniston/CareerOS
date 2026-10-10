@@ -520,6 +520,7 @@ export class OfficeRenderer {
 
     drawPixelShadow(ctx, x, y + 4, 16, 4);
     this.drawGroundPrism(station.cell.col, station.cell.row + 0.28, 25, 12, 6, "#817a60", "#4b4a3e", "#383a33");
+    this.drawConveyor(station, timestamp);
     ctx.fillStyle = "#262b27";
     ctx.fillRect(x - 6, y - 10, 12, 8);
     ctx.fillStyle = "#8e8767";
@@ -568,13 +569,37 @@ export class OfficeRenderer {
     ctx.font = "4px ui-monospace, SFMono-Regular, Menlo, monospace";
     ctx.textBaseline = "top";
     ctx.textAlign = "center";
-    ctx.fillText(station.label, x, y + 9, 35);
+    ctx.fillText(station.label, x, y + 15, 35);
     ctx.textAlign = "left";
     if (selected) {
       ctx.strokeStyle = PALETTE.light;
       ctx.lineWidth = 1;
       const size = 13 * this.project.scale;
       ctx.strokeRect(x - size, y - 15 * this.project.scale, size * 2, size * 2);
+    }
+  }
+
+  drawConveyor(station, timestamp) {
+    const { col } = station.cell;
+    const row = station.cell.row + 0.78;
+    const center = this.project(col, row);
+    const scale = this.project.scale;
+    drawPixelShadow(this.ctx, center.x, center.y + 1, 13 * scale, 2 * scale);
+    this.drawGroundPrism(col, row, 22, 8, 2, PALETTE.conveyor, "#29312e", "#202722");
+
+    for (const edge of [-0.19, 0.19]) {
+      const start = this.project(col - 0.29, row + edge);
+      const end = this.project(col + 0.29, row + edge);
+      drawPolygon(this.ctx, segmentBand(start, end, 0, 1, 0.8 * scale), "#a27e53");
+    }
+
+    const phase = this.reducedMotion ? 0 : ((timestamp / 1100) % 1) * 0.12;
+    for (let roller = 0; roller < 4; roller += 1) {
+      const offset = ((roller * 0.16 + phase) % 0.52) - 0.26;
+      const start = this.project(col + offset, row - 0.15);
+      const end = this.project(col + offset, row + 0.15);
+      const tone = roller % 2 === 0 ? "#a9a184" : "#737967";
+      drawPolygon(this.ctx, segmentBand(start, end, 0, 1, 0.8 * scale), tone);
     }
   }
 
@@ -682,6 +707,8 @@ export class OfficeRenderer {
     this.ctx.save();
     this.ctx.translate(x, y);
     this.ctx.scale(pixelScale, pixelScale);
+    this.ctx.fillStyle = lighten(actor.color, 36);
+    for (const [row, column] of appearance.outline) this.ctx.fillRect(column, row, 1, 1);
     for (let row = 0; row < sprite.length; row += 1) {
       for (let column = 0; column < sprite[row].length; column += 1) {
         const symbol = sprite[row][column];

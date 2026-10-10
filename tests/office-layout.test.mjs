@@ -12,6 +12,7 @@ const {
   WORKER_APPEARANCE,
   WORKER_STATIONS,
   SPRITE_COLORS,
+  PALETTE,
   createIsoProjector,
   findStationAt,
   projectIso,
@@ -125,8 +126,10 @@ test("worker sprites use a dense pixel grid with extra shade and highlight color
     assert.ok(appearance.sprite.every(row => row.length >= 40));
     const pixels = new Set(appearance.sprite.join(""));
     assert.ok(pixels.has("u") && pixels.has("v") && pixels.has("w"));
+    assert.ok(appearance.outline.length > 0, "each worker needs an exposed-pixel outline for floor contrast");
   }
   assert.ok(SPRITE_COLORS.u && SPRITE_COLORS.v && SPRITE_COLORS.w);
+  assert.ok(PALETTE.conveyor, "the office needs a dedicated belt surface color");
 });
 
 test("idle workers have separate floor positions instead of stacking in the corridor", () => {

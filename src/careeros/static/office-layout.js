@@ -65,6 +65,7 @@ export const PALETTE = Object.freeze({
   space: "#0b0e0d",
   frame: "#7958d8",
   steel: "#29302c",
+  conveyor: "#354a46",
   wall: "#5b5a4b",
   floor: "#41443a",
   grid: "#555548",
@@ -235,9 +236,39 @@ function addFinePixels(sprite) {
 }
 const DETAILED_BODY_SPRITE = addFinePixels(addFinePixels(BODY_SPRITE));
 
+function silhouetteOutline(sprite) {
+  const exposed = new Set();
+  for (let row = 0; row < sprite.length; row += 1) {
+    for (let column = 0; column < sprite[row].length; column += 1) {
+      if (sprite[row][column] === ".") continue;
+      for (let rowOffset = -1; rowOffset <= 1; rowOffset += 1) {
+        for (let columnOffset = -1; columnOffset <= 1; columnOffset += 1) {
+          if (rowOffset === 0 && columnOffset === 0) continue;
+          const outlineRow = row + rowOffset;
+          const outlineColumn = column + columnOffset;
+          if (outlineRow >= 0 && outlineRow < sprite.length
+            && outlineColumn >= 0 && outlineColumn < sprite[outlineRow].length
+            && sprite[outlineRow][outlineColumn] === ".") {
+            exposed.add(`${outlineRow},${outlineColumn}`);
+          }
+        }
+      }
+    }
+  }
+  return Object.freeze([...exposed].map(pixel => pixel.split(",").map(Number)));
+}
+
 function workerAppearance(color, stationId, waitCell, gear) {
   const wait = projectIso(waitCell.col, waitCell.row);
-  return { color, stationId, wait: { x: wait.x, y: wait.y + 2 }, waitCell, gear, sprite: DETAILED_BODY_SPRITE };
+  return {
+    color,
+    stationId,
+    wait: { x: wait.x, y: wait.y + 2 },
+    waitCell,
+    gear,
+    sprite: DETAILED_BODY_SPRITE,
+    outline: silhouetteOutline(DETAILED_BODY_SPRITE),
+  };
 }
 
 export const WORKER_APPEARANCE = Object.freeze({
