@@ -92,3 +92,48 @@ def test_cloud_preview_token_invalidates_on_selected_model_change(client):
     fake.model = 'changed-model'
     response = client.post('/api/applications', json={**inputs, 'provider': 'openai', 'confirm_cloud': True, 'preview_token': preview['preview_token']})
     assert response.status_code == 409
+
+
+def test_paid_revision_preview_binds_executing_model_and_requires_fresh_confirmation(client):
+    inputs = application_inputs(client)
+    started = client.post('/api/applications', json=inputs).json()
+    client.app.state.worker.run_once()
+    fake = client.app.state.fake_planner
+    fake.model = 'previewed-model'
+    client.app.state.gateway.openai_configured = True
+    client.app.state.gateway.planners['openai'] = fake
+    route = f"/api/applications/{started['id']}/revision-preview"
+    response = client.post(route, json={'provider': 'openai', 'findings': []})
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview['sent_data']['selected_provider'] == 'openai'
+    assert preview['sent_data']['selected_model'] == 'previewed-model'
+    calls = len(fake.calls)
+    task_id = client.app.state.queue.enqueue('application_revision',
+        {'application_id': started['id'], 'findings': [], 'revision_preview_token': preview['preview_token']}, 'openai', True)
+    fake.model = 'changed-unpreviewed-model'
+    client.app.state.worker.run_once()
+    assert len(fake.calls) == calls
+    assert client.app.state.queue.get(task_id).status == 'failed'
+    assert client.app.state.queue.get(task_id).available_at is None
+    fresh = client.post(route, json={'provider': 'openai', 'findings': []}).json()
+    assert fresh['preview_token'] != preview['preview_token']
+    assert fresh['sent_data']['selected_model'] == 'changed-unpreviewed-model'
+    replacement = client.app.state.queue.enqueue('application_revision',
+        {'application_id': started['id'], 'findings': [], 'revision_preview_token': fresh['preview_token']}, 'openai', True)
+    client.app.state.worker.run_once()
+    assert client.app.state.queue.get(replacement).status == 'needs_review'
+    assert len(fake.calls) == calls + 1
+    assert client.app.state.application_service.get(started['id']).model == 'changed-unpreviewed-model'
+
+
+def test_revision_preview_binds_selected_provider_and_findings(client):
+    inputs = application_inputs(client)
+    started = client.post('/api/applications', json=inputs).json()
+    client.app.state.worker.run_once()
+    route = f"/api/applications/{started['id']}/revision-preview"
+    first = client.post(route, json={'provider': 'openai', 'findings': []}).json()
+    second = client.post(route, json={'provider': 'ollama', 'findings': []}).json()
+    changed = client.post(route, json={'provider': 'openai', 'findings': [{'issue': 'New finding'}]}).json()
+    assert first['preview_token'] != second['preview_token']
+    assert first['preview_token'] != changed['preview_token']

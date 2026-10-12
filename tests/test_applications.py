@@ -407,3 +407,63 @@ def test_claim_validator_allows_first_person_rephrasing_of_complete_action():
     evidence = {'resume:1': EvidenceItem('resume:1', 'resume', 'Built a Python API. Used SQL for reporting.')}
     draft = evidence_draft('I built a Python API', anchor='Built a Python API')
     assert validate_claims(draft, evidence) == []
+
+
+def test_claim_coverage_rejects_reviewers_fabricated_numeric_join():
+    from careeros.applications.models import ApplicationDraft, ClaimEvidence, EvidenceItem, validate_claims
+    evidence = {'resume:1': EvidenceItem('resume:1', 'resume', 'Built a Python API serving 10. 0 users.')}
+    claims = [ClaimEvidence('c1', 'Built a Python API serving 10', ['resume:1'], ['Built a Python API serving 10']),
+              ClaimEvidence('c2', '0 users', ['resume:1'], ['0 users'])]
+    draft = ApplicationDraft('Built a Python API serving 100 users', '', {}, claims, [])
+    issues = validate_claims(draft, evidence)
+    assert issues
+    assert any('numeric' in issue.reason for issue in issues)
+
+
+@pytest.mark.parametrize('source,claim_texts,output', [
+    ('Java. Script.', ['Java', 'Script'], 'JavaScript'),
+    ('Built a Python API. Used SQL.', ['Built a Python API', 'Used SQL'], 'Built a Python API Used SQL'),
+    ('Built a Python API serving 10. 0 users.', ['Built a Python API serving 10', '0 users'], 'Built a Python API serving 10.0 users'),
+    ('Built a Python API serving 10. 0 users.', ['Built a Python API serving 10', '0 users'], 'Built a Python API serving 10,0 users'),
+])
+def test_claim_coverage_cannot_split_words_numbers_or_complete_statements(source, claim_texts, output):
+    from careeros.applications.models import ApplicationDraft, ClaimEvidence, EvidenceItem, validate_claims
+    evidence = {'resume:1': EvidenceItem('resume:1', 'resume', source)}
+    claims = [ClaimEvidence(f'c{i}', text, ['resume:1'], [text]) for i, text in enumerate(claim_texts)]
+    assert validate_claims(ApplicationDraft(output, '', {}, claims, []), evidence)
+
+
+def test_complete_claim_statements_can_be_reordered_and_repeated():
+    from careeros.applications.models import ApplicationDraft, ClaimEvidence, EvidenceItem, validate_claims
+    evidence = {'resume:1': EvidenceItem('resume:1', 'resume', 'Built a Python API. Used SQL.')}
+    claims = [ClaimEvidence('c1', 'Built a Python API', ['resume:1'], ['Built a Python API']),
+              ClaimEvidence('c2', 'I used SQL', ['resume:1'], ['Used SQL'])]
+    draft = ApplicationDraft('I used SQL. Built a Python API.', 'Built a Python API.', {'Experience': 'I used SQL'}, claims, [])
+    assert validate_claims(draft, evidence) == []
+
+
+def test_paid_revision_refuses_changed_model_after_preview(client, fake_planner):
+    from careeros.applications.service import _snapshot_token
+    resume = client.post('/api/resumes', json={'name': 'Base', 'text': 'Python'}).json()
+    job = client.post('/api/jobs/manual', json={'title': 'Backend Intern', 'company': 'Acme', 'url': 'https://jobs.example/1'}).json()
+    seed_verified_application_job(client.app, job['id'])
+    service = client.app.state.application_service
+    app, _ = service.create(job['id'], resume['id'], 'ollama')
+    client.app.state.worker.run_once()
+    fake_planner.model = 'previewed-model'
+    client.app.state.gateway.openai_configured = True
+    client.app.state.gateway.planners['openai'] = fake_planner
+    saved = service.get(app.id)
+    # Reproduce the old complete-input confirmation, which lacked executing
+    # provider/model identity and incorrectly authorized any configured model.
+    preview = {'snapshot': saved.snapshot, 'current_draft': saved.draft, 'findings': []}
+    token = _snapshot_token(preview)
+    task_id = client.app.state.queue.enqueue('application_revision', {'application_id': app.id, 'findings': [], 'revision_preview_token': token}, 'openai', True)
+    fake_planner.model = 'changed-unpreviewed-model'
+    calls = len(fake_planner.calls)
+    client.app.state.worker.run_once()
+    assert len(fake_planner.calls) == calls
+    assert client.app.state.queue.get(task_id).status == 'failed'
+    assert client.app.state.queue.get(task_id).available_at is None
+    assert 'preview' in client.app.state.queue.get(task_id).error.lower()
+    assert service.get(app.id).draft_version == saved.draft_version

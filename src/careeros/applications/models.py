@@ -104,6 +104,22 @@ def _supported_wording(claim: str, quote: str) -> bool:
     return claim == 'i ' + quote and bool(re.match(r'(?:' + actions + r')\b', quote))
 
 
+def _material_statements(value: str) -> list[str]:
+    # Split before whitespace normalization so explicit output lines remain
+    # separate statements. Decimal punctuation without whitespace is a token.
+    return [normalized for part in re.split(r'\n+|(?<=[.!?;])\s+', unicodedata.normalize('NFKC', value))
+            if (normalized := normalize_quote(part).rstrip('.!?;')) and re.search(r'\w', normalized)]
+
+
+def _contains_statements(output: list[str], claim: list[str]) -> bool:
+    return bool(claim) and any(output[index:index + len(claim)] == claim
+                               for index in range(len(output) - len(claim) + 1))
+
+
+def _numbers(value: str) -> set[str]:
+    return set(re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\+)?(?!\w)', value))
+
+
 def validate_claims(draft: ApplicationDraft, evidence_snapshot: dict[str, EvidenceItem]) -> list[ClaimIssue]:
     # Direct dataclass construction and manual edits have the same bounds as JSON.
     from dataclasses import asdict
@@ -112,8 +128,12 @@ def validate_claims(draft: ApplicationDraft, evidence_snapshot: dict[str, Eviden
     except (InvalidPlannerOutput, TypeError) as exc:
         return [ClaimIssue('draft', str(exc))]
     issues = []
-    all_output = normalize_quote('\n'.join([draft.resume_text, draft.cover_letter, *draft.answers.values()]))
+    materials = [('resume_text', draft.resume_text), ('cover_letter', draft.cover_letter), *draft.answers.items()]
+    output_statements = [_material_statements(value) for _, value in materials]
+    supported_statements = set()
+    supported_numbers = set()
     for claim in draft.claims:
+        issue_count = len(issues)
         sources = []
         invalid = False
         for evidence_id in claim.evidence_ids:
@@ -141,8 +161,8 @@ def validate_claims(draft: ApplicationDraft, evidence_snapshot: dict[str, Eviden
             issues.append(ClaimIssue(claim.claim_id, 'Claim requires an exact normalized quote anchor'))
         elif any(anchor not in complete_quotes for anchor in anchors):
             issues.append(ClaimIssue(claim.claim_id, 'Quote anchor must match a complete statement in linked candidate evidence'))
-        numbers = set(re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\+)?', normalize_quote(claim.text)))
-        candidate_numbers = set(re.findall(r'(?<!\w)\d+(?:[.,]\d+)*(?:%|\+)?', ' '.join(source_texts)))
+        numbers = _numbers(normalize_quote(claim.text))
+        candidate_numbers = _numbers(' '.join(source_texts))
         if not numbers <= candidate_numbers:
             issues.append(ClaimIssue(claim.claim_id, 'Unsupported numeric claim in candidate evidence'))
         # Exact source wording is deliberately required: an anchor alone cannot
@@ -151,14 +171,17 @@ def validate_claims(draft: ApplicationDraft, evidence_snapshot: dict[str, Eviden
         supporting = anchors or [normalize_quote(item.text) for item in sources if item.attested and item.category == 'profile']
         if not any(_supported_wording(normalized, quote) for quote in supporting):
             issues.append(ClaimIssue(claim.claim_id, 'Claim text is not supported by its candidate quote anchors'))
-        if normalized not in all_output:
-            issues.append(ClaimIssue(claim.claim_id, 'Claim text is absent from application materials'))
-    # Require complete coverage, including a forged fact hidden outside claims.
-    # There is no model-based semantic exemption that can silently bless a fact.
-    for label, value in [('resume_text', draft.resume_text), ('cover_letter', draft.cover_letter), *draft.answers.items()]:
-        remainder = normalize_quote(value)
-        for claim in sorted(draft.claims, key=lambda item: len(item.text), reverse=True):
-            remainder = remainder.replace(normalize_quote(claim.text), ' ')
-        if re.search(r'\w', remainder):
-            issues.append(ClaimIssue(label, 'Application material contains untraced text; link every claim to candidate evidence'))
+        statements = _material_statements(claim.text)
+        if not any(_contains_statements(output, statements) for output in output_statements):
+            issues.append(ClaimIssue(claim.claim_id, 'Claim text is absent as complete statements from application materials'))
+        if len(issues) == issue_count:
+            supported_statements.update(statements)
+            supported_numbers.update(numbers)
+    # Check whole output statements, never delete substrings from a mutable
+    # remainder. Two supported claims cannot join into a different fact/token.
+    for (label, value), statements in zip(materials, output_statements):
+        if any(statement not in supported_statements for statement in statements):
+            issues.append(ClaimIssue(label, 'Application material contains untraced text; link every complete statement to candidate evidence'))
+        if not _numbers(normalize_quote(value)) <= supported_numbers:
+            issues.append(ClaimIssue(label, 'Application material contains unsupported numeric output'))
     return issues

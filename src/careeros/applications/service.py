@@ -50,6 +50,24 @@ class ApplicationService:
         snapshot = self._snapshot(job_id, resume_id)
         return snapshot, _snapshot_token(snapshot)
 
+    def preview_revision(self, application_id: str, provider: str, findings: list | None = None) -> tuple[dict, str]:
+        application = self.get(application_id)
+        if not application:
+            raise LookupError('Application not found')
+        if application.status not in {'preparing', 'needs_review'} or application.draft is None:
+            raise RuntimeError('Application is not awaiting a revision')
+        context = self._revision_context(application, provider, findings or [])
+        return context, _snapshot_token(context)
+
+    def _revision_context(self, application: Application, provider: str, findings: list) -> dict:
+        if provider not in {'ollama', 'openai'}:
+            raise ValueError('Choose Ollama or OpenAI')
+        if application.snapshot is None or _snapshot_token(application.snapshot) != application.snapshot_hash:
+            raise RuntimeError('Application has no valid fixed evidence snapshot. Prepare a new application.')
+        return {'snapshot': application.snapshot, 'current_draft': application.draft,
+                'findings': self._revision_findings(application.id, findings),
+                'selected_provider': provider, 'selected_model': self._model(provider)}
+
     def create(self, job_id: str, resume_id: str, provider: str, confirm_cloud: bool = False, preview_token: str | None = None) -> tuple[Application, str]:
         self.gateway.authorize(provider, confirm_cloud)
         snapshot = self._snapshot(job_id, resume_id, require_ready=True)
@@ -118,17 +136,20 @@ class ApplicationService:
             if application.snapshot is None or _snapshot_token(application.snapshot) != application.snapshot_hash:
                 raise RuntimeError('Application has no valid fixed evidence snapshot. Prepare a new application.')
             context = {'snapshot': application.snapshot}
+            executing_model = self._model(task.provider)
             if revision:
-                context['current_draft'] = application.draft
-                context['findings'] = self._revision_findings(application.id, task)
+                context = self._revision_context(application, task.provider, task.payload.get('findings', []))
+                executing_model = context['selected_model']
                 if task.provider == 'openai':
                     token = task.payload.get('revision_preview_token')
                     if not token or not hmac.compare_digest(token, _snapshot_token(context)):
                         raise RuntimeError('Review the complete revision preview and confirm paid use for this task.')
-            elif task.provider != application.provider or self._model(task.provider) != application.model:
+            elif task.provider != application.provider or executing_model != application.model:
                 raise RuntimeError('Application provider or model changed. Prepare a new application.')
             request = PlannerRequest(_application_task(context), _application_instruction())
             try:
+                if self._model(task.provider) != executing_model:
+                    raise RuntimeError('Provider model changed. Review a fresh preview and confirm this task.')
                 result = self.gateway.generate(task.provider, request, task.cloud_confirmed)
             except (ProviderUnavailable, httpx.TransportError) as exc:
                 if task.provider == 'ollama':
@@ -146,7 +167,7 @@ class ApplicationService:
                 changed = conn.execute("""UPDATE applications SET status='needs_review',draft_json=?,draft_version=draft_version+1,
                                           clearance_stale=1,revision_task_id=?,provider=?,model=?,updated_at=?
                                           WHERE id=? AND draft_version=? AND status=?""",
-                                       (json.dumps(asdict(draft)), task.id if revision else None, task.provider, self._model(task.provider), now(),
+                                       (json.dumps(asdict(draft)), task.id if revision else None, task.provider, executing_model, now(),
                                         app_id, application.draft_version, application.status)).rowcount
                 if changed != 1:
                     raise RuntimeError('Application changed state while its draft was being prepared')
@@ -161,13 +182,13 @@ class ApplicationService:
                     conn.execute("UPDATE applications SET status='failed',updated_at=? WHERE id=? AND status='preparing'", (now(), app_id))
             raise
 
-    def _revision_findings(self, application_id: str, task: Task) -> list:
+    def _revision_findings(self, application_id: str, fallback: list) -> list:
         # Task 4 owns review persistence. Prefer its latest stored findings when
         # installed; the queue ticket is the contract before that stage exists.
         with self.db.connect() as conn:
             installed = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hiring_reviews'").fetchone()
             row = conn.execute('SELECT findings_json FROM hiring_reviews WHERE application_id=? ORDER BY cycle DESC LIMIT 1', (application_id,)).fetchone() if installed else None
-        findings = json.loads(row['findings_json']) if row else task.payload.get('findings', [])
+        findings = json.loads(row['findings_json']) if row else fallback
         if not isinstance(findings, list) or len(findings) > 100 or len(json.dumps(findings)) > 100000:
             raise InvalidPlannerOutput('Invalid revision findings')
         return findings

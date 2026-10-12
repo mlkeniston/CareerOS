@@ -46,6 +46,22 @@ class DraftInput(BaseModel):
     next_steps: list[StrictStr] = Field(default_factory=list, max_length=30)
 
 
+class RevisionPreviewInput(BaseModel):
+    provider: str = Field(pattern="^(ollama|openai)$")
+    findings: list[dict] = Field(default_factory=list, max_length=100)
+
+
+@router.post('/api/applications/{application_id}/revision-preview')
+def preview_revision(application_id: str, payload: RevisionPreviewInput, request: Request):
+    try:
+        data, token = request.app.state.application_service.preview_revision(application_id, payload.provider, payload.findings)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {'sent_data': data, 'preview_token': token, 'model': data['selected_model']}
+
+
 @router.post("/api/applications", status_code=202)
 def create_application(payload: PrepareInput, request: Request):
     try:
