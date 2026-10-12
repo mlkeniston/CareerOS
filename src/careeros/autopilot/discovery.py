@@ -90,13 +90,14 @@ class JobDiscoveryService:
             return False
         profile = self.profiles.get()
         roles = [role.strip() for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()]
+        locations = [location.strip() for location in (profile.preferred_locations or []) if isinstance(location, str) and location.strip()]
         resume = self.resumes.most_recent() if roles else None
         if not roles or resume is None:
             return False
         candidates = []
         for job in self.repository.recent(limit=500):
             technology_score, _ = score_technology_role(job)
-            if technology_score < 70:
+            if technology_score < 70 or not _matches_preferred_location(job, locations):
                 continue
             relevance = max((_role_overlap(job.title, role) for role in roles), default=0)
             if relevance:
@@ -114,13 +115,14 @@ class JobDiscoveryService:
             return False
         profile = self.profiles.get()
         roles = [role.strip() for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()]
+        locations = [location.strip() for location in (profile.preferred_locations or []) if isinstance(location, str) and location.strip()]
         resume = self.resumes.most_recent() if roles else None
         if not roles or resume is None:
             return False
         candidates = []
         for job in self.repository.recent(limit=500):
             technology_score, _ = score_technology_role(job)
-            if technology_score < 70:
+            if technology_score < 70 or not _matches_preferred_location(job, locations):
                 continue
             relevance = max((_role_overlap(job.title, role) for role in roles), default=0)
             if relevance:
@@ -204,3 +206,19 @@ def _role_overlap(title: str, role: str) -> int:
         return 100 + len(normalized_role.split())
     title_terms = set(normalized_title.split())
     return len(title_terms.intersection(normalized_role.split()))
+
+
+def _matches_preferred_location(job, preferred_locations: list[str]) -> bool:
+    preferences = [_normalize(item) for item in preferred_locations if isinstance(item, str) and item.strip()]
+    if not preferences:
+        return True
+    location = _normalize(job.location)
+    remote = job.remote or "remote" in location.split()
+    padded_location = f" {location} "
+    for preference in preferences:
+        if "remote" in preference.split():
+            if remote:
+                return True
+        elif preference in padded_location:
+            return True
+    return False

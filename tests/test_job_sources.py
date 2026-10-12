@@ -1,5 +1,7 @@
 import httpx
 import pytest
+import threading
+import time
 
 from careeros.jobs.arbeitnow import ArbeitnowSource
 from careeros.jobs.boards import GreenhouseSource, LeverSource
@@ -31,3 +33,38 @@ def test_greenhouse_and_lever_normalize( greenhouse_fixture, lever_fixture):
     lever = LeverSource(client_with_json(lever_fixture), ["acme"])
     assert gh.fetch(JobQuery()).jobs[0].source == "greenhouse:acme"
     assert lever.fetch(JobQuery()).jobs[0].source == "lever:acme"
+
+
+def test_sources_reject_malformed_top_level_json():
+    with pytest.raises(ValueError):
+        ArbeitnowSource(client=client_with_json([])).fetch(JobQuery())
+    with pytest.raises(ValueError):
+        GreenhouseSource(client_with_json([]), ["acme"]).fetch(JobQuery())
+    with pytest.raises(ValueError):
+        GreenhouseSource(client_with_json({"jobs": {}}), ["acme"]).fetch(JobQuery())
+
+
+def test_greenhouse_board_fetches_run_in_parallel_with_a_five_request_cap():
+    class TrackingClient:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.active = 0
+            self.peak = 0
+
+        def get(self, url, params=None):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(0.02)
+                return httpx.Response(200, json={"jobs": []}, request=httpx.Request("GET", url))
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    client = TrackingClient()
+    result = GreenhouseSource(client, [f"board-{i}" for i in range(12)]).fetch(JobQuery())
+
+    assert result.jobs == []
+    assert client.peak > 1
+    assert client.peak <= 5

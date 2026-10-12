@@ -90,6 +90,10 @@ class OutreachService:
             draft = self.get(draft_id)
             if draft is None:
                 raise LookupError("Outreach draft record not found")
+            if draft.status in {"needs_review", "approved"} and draft.draft is not None:
+                return TaskOutcome("needs_review", {"outreach_id": draft_id})
+            if draft.status != "preparing":
+                raise RuntimeError("Outreach draft is no longer preparing")
             snapshot = self._snapshot(draft.job_id, draft.resume_id)
             request = PlannerRequest(_outreach_task(snapshot), _outreach_instruction())
             result = self.planner.generate(request)
@@ -99,11 +103,15 @@ class OutreachService:
                 raise InvalidOutreachDraft("Planner returned an invalid outreach draft") from exc
             payload = asdict(message)
             with self.db.connect() as conn:
-                conn.execute(
+                conn.execute("BEGIN IMMEDIATE")
+                changed = conn.execute(
                     "UPDATE outreach_drafts SET status='needs_review',draft_json=?,updated_at=? "
                     "WHERE id=? AND status='preparing'",
                     (json.dumps(payload), now(), draft_id),
-                )
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("Outreach draft changed state while it was being prepared")
+                self.queue.finish_in_transaction(conn, task.id, {"outreach_id": draft_id}, "needs_review")
             return TaskOutcome("needs_review", {"outreach_id": draft_id})
         except Exception:
             with self.db.connect() as conn:

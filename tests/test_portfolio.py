@@ -126,6 +126,42 @@ def test_proposal_and_queue_task_are_inserted_atomically(client):
         assert conn.execute("SELECT COUNT(*) FROM portfolio_proposals").fetchone()[0] == 0
 
 
+def test_partial_staging_from_interrupted_task_is_rebuilt(client, fake_planner):
+    created = client.post("/api/portfolio/proposals", json={
+        "project_id": "demo", "title": "Weather", "description": "Add forecast", "provider": "ollama"
+    }).json()
+    stage = client.app.state.portfolio_paths.proposal_dir(created["proposal_id"])
+    stage.mkdir(parents=True)
+    (stage / "partial.txt").write_text("interrupted before review")
+    task = client.app.state.queue.claim_next({"portfolio"})
+
+    client.app.state.portfolio_service.handle_task(task)
+
+    proposal = client.app.state.portfolio_service.get(created["proposal_id"])
+    assert proposal["status"] == "needs_review"
+    assert client.app.state.queue.get(task.id).status == "needs_review"
+    assert not (stage / "partial.txt").exists()
+    assert (stage / "README.md").read_text() == "generated"
+
+
+def test_recovered_prepared_proposal_does_not_call_planner_again(client, fake_planner):
+    created = client.post("/api/portfolio/proposals", json={
+        "project_id": "demo", "title": "Weather", "description": "Add forecast", "provider": "ollama"
+    }).json()
+    assert client.app.state.worker.run_once()
+    calls = len(fake_planner.calls)
+    with client.app.state.db.connect() as conn:
+        conn.execute("UPDATE tasks SET status='running',result_json=NULL WHERE id=?", (created["task_id"],))
+
+    assert client.app.state.queue.recover_after_restart() == 1
+    assert client.app.state.worker.run_once()
+
+    proposal = client.app.state.portfolio_service.get(created["proposal_id"])
+    assert len(fake_planner.calls) == calls
+    assert proposal["status"] == "needs_review"
+    assert client.app.state.queue.get(created["task_id"]).status == "needs_review"
+
+
 def test_automatic_portfolio_proposal_deduplicates_and_retries_failed_task(client):
     service = client.app.state.portfolio_service
     brief = PortfolioBrief("market-python", "Python market showcase", "Show Python skills from recurring internship listings.")
@@ -142,6 +178,7 @@ def test_automatic_portfolio_proposal_deduplicates_and_retries_failed_task(clien
         "different-fingerprint",
     ) is None
 
+    client.app.state.queue.claim_next({"portfolio"})
     client.app.state.queue.fail(task_id, "local planner unavailable")
     retried = service.create_automatic(brief, "portfolio-fingerprint")
 

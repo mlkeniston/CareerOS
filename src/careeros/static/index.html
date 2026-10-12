@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#070713">
   <title>CareerOS — your office</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/office.css">
+  <link rel="stylesheet" href="/static/styles.css?v=pixel-rail">
+  <link rel="stylesheet" href="/static/office.css?v=soft-office-overlays-20261011">
 </head>
 <body class="office-active">
   <div class="app-shell">
@@ -16,9 +16,42 @@
         <div class="topbar-note"><span class="status-dot"></span><span id="office-connection">LOCAL · CONNECTING</span></div>
         <span id="autopilot-indicator" class="autopilot-indicator visually-hidden" role="status">CONNECTING</span>
         <button id="autopilot-toggle" class="office-button" type="button" aria-pressed="true" aria-label="Checking automatic discovery status" disabled>AUTO —</button>
-        <button id="toggle-roster" class="quiet-button team-toggle" type="button" aria-expanded="false" aria-controls="worker-roster-panel"><span aria-hidden="true">▦</span><span>Team</span></button>
+        <button id="toggle-roster" class="quiet-button team-toggle" type="button" aria-expanded="false" aria-controls="worker-roster-panel"><span aria-hidden="true">▦</span><span>Departments</span></button>
+        <button id="toggle-inspector" class="quiet-button details-toggle" type="button" aria-expanded="false" aria-controls="task-inspector"><span aria-hidden="true">▤</span><span>Details</span></button>
       </div>
     </header>
+
+    <aside id="worker-roster-panel" class="worker-panel" aria-labelledby="roster-heading">
+      <div class="rail-title">
+        <span class="section-tag">CAREEROS · 01</span>
+        <h2 id="roster-heading">Departments</h2>
+      </div>
+      <nav id="department-nav" class="department-nav" aria-label="Departments">
+        <button class="department-link" type="button" data-station="home" aria-current="page"><span class="department-icon">▦</span><span><strong>Office floor</strong><small>See the team at work</small></span></button>
+        <button class="department-link" type="button" data-station="jobs"><span class="department-icon">⌕</span><span><strong>Find a job</strong><small>Search and save roles</small></span></button>
+        <button class="department-link" type="button" data-station="resume"><span class="department-icon">▤</span><span><strong>Resume desk</strong><small>Profile and versions</small></span></button>
+        <button class="department-link" type="button" data-station="applications"><span class="department-icon">▧</span><span><strong>Applications</strong><small>Review prepared drafts</small></span></button>
+        <button class="department-link" type="button" data-station="outreach"><span class="department-icon">✉</span><span><strong>LinkedIn outreach</strong><small>Review message drafts</small></span></button>
+        <button class="department-link" type="button" data-station="portfolio"><span class="department-icon">⌘</span><span><strong>Portfolio workshop</strong><small>Review project proposals</small></span></button>
+        <button class="department-link" type="button" data-station="settings"><span class="department-icon">⚙</span><span><strong>Planner settings</strong><small>Choose your AI model</small></span></button>
+      </nav>
+      <div class="rail-team-head"><span class="section-tag">ACTIVE / TEAM</span><span id="team-live-count" class="rail-count" aria-label="Worker activity">—</span></div>
+      <div id="worker-roster" role="list" aria-label="Worker status list">
+        <p class="office-loading">Connecting to the local queue…</p>
+      </div>
+      <button id="close-roster" class="drawer-close" type="button">Close menu</button>
+    </aside>
+
+    <aside id="task-inspector" class="task-inspector" aria-labelledby="inspector-heading">
+      <div class="office-section-head">
+        <span id="inspector-context" class="section-tag">OFFICE STATUS</span>
+        <button id="close-inspector" class="inspector-close" type="button" aria-label="Close details">×</button>
+      </div>
+      <h2 id="inspector-heading" tabindex="-1">Quick status</h2>
+      <p id="inspector-copy">Choose a worker to see what they are doing.</p>
+      <div id="inspector-meta" class="inspector-meta"></div>
+      <button id="inspector-open-station" class="button button-soft inspector-open" type="button" hidden>Open department</button>
+    </aside>
 
     <main>
       <section id="home-screen" class="home-screen office-home" aria-labelledby="welcome-title">
@@ -26,16 +59,6 @@
         <p id="autopilot-schedule" class="visually-hidden">Connecting to this Mac…</p>
 
         <div class="office-grid">
-          <aside id="worker-roster-panel" class="worker-panel" aria-labelledby="roster-heading" hidden>
-            <div class="office-section-head">
-              <h2 id="roster-heading">Team</h2>
-              <button id="close-roster" class="inspector-close" type="button" aria-label="Close team">×</button>
-            </div>
-            <div id="worker-roster" role="list" aria-label="Worker status list">
-              <p class="office-loading">Connecting to the local queue…</p>
-            </div>
-          </aside>
-
           <section class="map-panel" aria-labelledby="map-heading">
             <h2 id="map-heading" class="visually-hidden">CareerOS station</h2>
             <div class="canvas-frame">
@@ -52,26 +75,7 @@
                 <small id="worker-tooltip-model"></small>
               </div>
             </div>
-            <nav class="station-nav" aria-label="Office stations">
-              <button type="button" data-station="jobs"><span aria-hidden="true">⌕</span><span>Jobs</span></button>
-              <button type="button" data-station="resume"><span aria-hidden="true">▤</span><span>Resume</span></button>
-              <button type="button" data-station="applications"><span aria-hidden="true">▧</span><span>Drafts</span></button>
-              <button type="button" data-station="outreach"><span aria-hidden="true">✉</span><span>Outreach</span></button>
-              <button type="button" data-station="portfolio"><span aria-hidden="true">⌘</span><span>Build</span></button>
-              <button type="button" data-station="settings"><span aria-hidden="true">⚙</span><span>Planner</span></button>
-            </nav>
           </section>
-
-          <aside id="task-inspector" class="task-inspector" aria-labelledby="inspector-heading" aria-live="polite" hidden>
-            <div class="office-section-head">
-              <span class="section-tag">SELECTED</span>
-              <button id="close-inspector" class="inspector-close" type="button" aria-label="Close task details">×</button>
-            </div>
-            <h2 id="inspector-heading">Task details</h2>
-            <p id="inspector-copy">Choose a worker to see its current queue state.</p>
-            <div id="inspector-meta" class="inspector-meta"></div>
-            <button id="inspector-open-station" class="button button-soft inspector-open" type="button" hidden>Open department</button>
-          </aside>
         </div>
 
         <section class="operations-strip" aria-label="Live operations counts" hidden>
@@ -154,6 +158,6 @@
       </form>
     </dialog>
   </div>
-  <script type="module" src="/static/app.js?v=outreach-model"></script>
+  <script type="module" src="/static/app.js?v=neon-office-fullbleed-20261011"></script>
 </body>
 </html>

@@ -14,6 +14,10 @@ class PaidUseConfirmationRequired(ValueError):
     pass
 
 
+class InvalidTaskTransition(RuntimeError):
+    pass
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -78,15 +82,43 @@ class TaskQueue:
         return self.get(row["id"]) if changed else None
 
     def finish(self, task_id: str, result: dict[str, Any], status: str = "completed") -> None:
+        with self.db.connect() as conn:
+            self.finish_in_transaction(conn, task_id, result, status)
+
+    def finish_in_transaction(self, conn: sqlite3.Connection, task_id: str, result: dict[str, Any], status: str = "completed") -> None:
         if status not in {"needs_review", "completed"}:
             raise ValueError("invalid completion status")
-        with self.db.connect() as conn:
-            conn.execute("UPDATE tasks SET status=?,result_json=?,error=NULL,updated_at=? WHERE id=?", (status, json.dumps(result), now(), task_id))
+        result_json = json.dumps(result)
+        row = conn.execute("SELECT status,result_json,error FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            raise LookupError("Task not found")
+        if row["status"] == status and row["result_json"] == result_json and row["error"] is None:
+            return
+        if row["status"] != "running":
+            raise InvalidTaskTransition(f"Invalid task transition from {row['status']}; expected running")
+        changed = conn.execute(
+            "UPDATE tasks SET status=?,result_json=?,error=NULL,updated_at=? WHERE id=? AND status='running'",
+            (status, result_json, now(), task_id),
+        ).rowcount
+        if changed != 1:
+            raise InvalidTaskTransition("Task changed state before it could be finished")
 
     def fail(self, task_id: str, message: str) -> None:
         safe = (message or "Task failed")[:240]
         with self.db.connect() as conn:
-            conn.execute("UPDATE tasks SET status='failed',error=?,updated_at=? WHERE id=?", (safe, now(), task_id))
+            row = conn.execute("SELECT status,error FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None:
+                raise LookupError("Task not found")
+            if row["status"] == "failed" and row["error"] == safe:
+                return
+            if row["status"] != "running":
+                raise InvalidTaskTransition(f"Invalid task transition from {row['status']}; expected running")
+            changed = conn.execute(
+                "UPDATE tasks SET status='failed',error=?,updated_at=? WHERE id=? AND status='running'",
+                (safe, now(), task_id),
+            ).rowcount
+            if changed != 1:
+                raise InvalidTaskTransition("Task changed state before it could be failed")
 
     def recover_after_restart(self) -> int:
         with self.db.connect() as conn:

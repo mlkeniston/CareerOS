@@ -110,6 +110,10 @@ class ApplicationService:
             application = self.get(app_id)
             if not application:
                 raise LookupError("Application record not found")
+            if application.status in {"needs_review", "approved"} and application.draft is not None:
+                return TaskOutcome("needs_review", {"application_id": app_id})
+            if application.status != "preparing":
+                raise RuntimeError("Application is no longer preparing")
             if task.provider == "openai":
                 snapshot = task.payload["cloud_snapshot"]
             else:
@@ -122,7 +126,14 @@ class ApplicationService:
                 raise InvalidPlannerOutput("Planner returned an invalid application draft") from exc
             payload = asdict(draft)
             with self.db.connect() as conn:
-                conn.execute("UPDATE applications SET status='needs_review',draft_json=?,updated_at=? WHERE id=?", (json.dumps(payload), now(), app_id))
+                conn.execute("BEGIN IMMEDIATE")
+                changed = conn.execute(
+                    "UPDATE applications SET status='needs_review',draft_json=?,updated_at=? WHERE id=? AND status='preparing'",
+                    (json.dumps(payload), now(), app_id),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("Application changed state while its draft was being prepared")
+                self.queue.finish_in_transaction(conn, task.id, {"application_id": app_id}, "needs_review")
             return TaskOutcome("needs_review", {"application_id": app_id})
         except Exception:
             with self.db.connect() as conn:

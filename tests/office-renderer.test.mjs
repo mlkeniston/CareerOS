@@ -69,6 +69,34 @@ function withReducedMotion(callback) {
   }
 }
 
+function withAnimationFrames(callback) {
+  const previousWindow = globalThis.window;
+  let nextFrameId = 0;
+  const frames = new Map();
+  const cancelled = [];
+  globalThis.window = {
+    devicePixelRatio: 1,
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    addEventListener() {},
+    removeEventListener() {},
+    requestAnimationFrame(handler) {
+      const id = ++nextFrameId;
+      frames.set(id, handler);
+      return id;
+    },
+    cancelAnimationFrame(id) {
+      cancelled.push(id);
+      frames.delete(id);
+    },
+  };
+  try {
+    return callback({ frames, cancelled });
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+}
+
 test("renderer draws the connected conveyor lanes over an atmospheric backdrop", () => {
   withReducedMotion(() => {
     const { canvas, filledStyles, linearGradients } = canvasHarness();
@@ -182,5 +210,22 @@ test("higher-density worker pixels keep the same clickable sprite footprint", ()
     assert.ok(appearance.sprite.length >= 70 && appearance.sprite[0].length >= 40);
     assert.ok(rectStyles.includes("rgb(103, 255, 255)"), "worker silhouette should use a bright department-colored rim");
     renderer.destroy();
+  });
+});
+
+test("renderer cancels animation while inactive and resumes it on return", () => {
+  withAnimationFrames(({ frames, cancelled }) => {
+    const { canvas } = canvasHarness();
+    const renderer = new OfficeRenderer(canvas);
+    assert.equal(frames.size, 1, "visible office should have one pending animation frame");
+
+    renderer.setActive(false);
+    assert.equal(frames.size, 0, "hidden office should cancel its pending animation frame");
+    assert.equal(cancelled.length, 1);
+
+    renderer.setActive(true);
+    assert.equal(frames.size, 1, "returning to the office should resume animation");
+    renderer.destroy();
+    assert.equal(frames.size, 0, "destroy should cancel the resumed animation frame");
   });
 });

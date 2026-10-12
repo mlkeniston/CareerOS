@@ -19,12 +19,18 @@ class ArbeitnowSource:
         for page in range(1, self.max_pages + 1):
             response = self.client.get(self.URL, params={"page": page})
             response.raise_for_status()
-            values = response.json().get("data", [])
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Arbeitnow returned an invalid response object")
+            values = payload.get("data", [])
             if not isinstance(values, list):
                 raise ValueError("Arbeitnow returned an invalid listing collection")
             if not values:
                 break
             for row in values:
+                if not isinstance(row, dict):
+                    warnings += 1
+                    continue
                 try:
                     raw_kind = ", ".join(row.get("job_types", []) or [])
                     kind = normalize_kind(raw_kind)

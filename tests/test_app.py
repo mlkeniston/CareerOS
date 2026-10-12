@@ -1,3 +1,8 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from careeros.config import Settings
 from fastapi.testclient import TestClient
 from careeros.main import create_app
@@ -7,6 +12,27 @@ def test_health_endpoint(client):
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def test_importing_main_does_not_initialize_the_default_data_directory(tmp_path):
+    data_dir = tmp_path / "default-data"
+    env = os.environ.copy()
+    env["CAREEROS_DATA_DIR"] = str(data_dir)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(__file__).parents[1] / "src"), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os; import careeros.main; assert not os.path.exists(os.environ['CAREEROS_DATA_DIR'])",
+        ],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_default_settings_use_local_planner_and_loopback(tmp_path):

@@ -33,6 +33,7 @@ export class OfficeRenderer {
     this.selection = null;
     this.hoveredWorker = null;
     this.hoverPosition = null;
+    this.active = true;
     this.destroyed = false;
     this.lastFrameAt = 0;
     this.motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -96,6 +97,20 @@ export class OfficeRenderer {
   setSelection(selection) {
     this.selection = selection && ["worker", "station"].includes(selection.type) ? selection : null;
     this.draw(0);
+  }
+
+  setActive(active) {
+    const next = Boolean(active);
+    if (this.destroyed || this.active === next) return;
+    this.active = next;
+    this.lastFrameAt = 0;
+    if (!this.active) {
+      if (this.frameId) window.cancelAnimationFrame(this.frameId);
+      this.frameId = undefined;
+      return;
+    }
+    this.draw(0);
+    if (!this.reducedMotion) this.startAnimation();
   }
 
   setRotation(degrees) {
@@ -203,9 +218,9 @@ export class OfficeRenderer {
   }
 
   startAnimation() {
-    if (this.destroyed || this.reducedMotion || this.frameId) return;
+    if (this.destroyed || !this.active || this.reducedMotion || this.frameId) return;
     const frame = timestamp => {
-      if (this.destroyed || this.reducedMotion) {
+      if (this.destroyed || !this.active || this.reducedMotion) {
         this.frameId = undefined;
         return;
       }
@@ -259,28 +274,6 @@ export class OfficeRenderer {
     sky.addColorStop(1, "#110f19");
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, LOGICAL_SIZE.width, LOGICAL_SIZE.height);
-
-    const previousAlpha = ctx.globalAlpha ?? 1;
-    ctx.globalAlpha = 0.52;
-    const skyline = [
-      { x: 8, width: 22, height: 31 }, { x: 35, width: 30, height: 46 },
-      { x: 72, width: 18, height: 25 }, { x: 99, width: 27, height: 39 },
-      { x: 480, width: 19, height: 28 }, { x: 505, width: 31, height: 47 },
-      { x: 542, width: 22, height: 34 }, { x: 570, width: 24, height: 43 },
-    ];
-    for (let building = 0; building < skyline.length; building += 1) {
-      const tower = skyline[building];
-      const top = 58 - tower.height;
-      ctx.fillStyle = building % 2 ? "#10171c" : "#111b1d";
-      ctx.fillRect(tower.x, top, tower.width, tower.height);
-      ctx.fillStyle = building % 3 === 0 ? "#a5583b" : "#286e70";
-      ctx.fillRect(tower.x + tower.width / 2, top - 3, 2, 3);
-      for (let window = 0; window < 3; window += 1) {
-        ctx.fillStyle = window === building % 3 ? "rgba(255, 201, 94, .42)" : "rgba(67, 237, 255, .2)";
-        ctx.fillRect(tower.x + 4 + window * 6, top + 8 + (building % 2) * 3, 2, 2);
-      }
-    }
-    ctx.globalAlpha = previousAlpha;
   }
 
   drawDustHaze() {

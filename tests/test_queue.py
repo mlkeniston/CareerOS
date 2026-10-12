@@ -1,3 +1,5 @@
+import pytest
+
 from careeros.queue import PaidUseConfirmationRequired, TaskQueue
 from careeros.worker import TaskOutcome, Worker
 
@@ -38,3 +40,34 @@ def test_worker_persists_review_result(db):
     assert worker.run_once()
     assert queue.get(task_id).status == "needs_review"
     assert queue.get(task_id).result == {"draft": "ready"}
+
+
+def test_task_completion_requires_running_state_and_allows_identical_repeat(db):
+    queue = TaskQueue(db)
+    task_id = queue.enqueue("sample", {}, "ollama")
+
+    with pytest.raises(RuntimeError, match="running"):
+        queue.finish(task_id, {"draft": "ready"}, "needs_review")
+
+    assert queue.claim_next({"sample"}).id == task_id
+    queue.finish(task_id, {"draft": "ready"}, "needs_review")
+    queue.finish(task_id, {"draft": "ready"}, "needs_review")
+    assert queue.get(task_id).result == {"draft": "ready"}
+
+    with pytest.raises(RuntimeError, match="transition"):
+        queue.finish(task_id, {"draft": "changed"}, "needs_review")
+
+
+def test_task_failure_requires_running_state_and_is_idempotent(db):
+    queue = TaskQueue(db)
+    task_id = queue.enqueue("sample", {}, "ollama")
+
+    with pytest.raises(RuntimeError, match="running"):
+        queue.fail(task_id, "offline")
+
+    queue.claim_next({"sample"})
+    queue.fail(task_id, "offline")
+    queue.fail(task_id, "offline")
+    assert queue.get(task_id).status == "failed"
+    with pytest.raises(RuntimeError, match="transition"):
+        queue.finish(task_id, {}, "completed")

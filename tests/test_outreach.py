@@ -167,6 +167,58 @@ def test_malformed_outreach_output_creates_no_partial_draft(client, fake_planner
     assert drafts[0]["draft"] is None
 
 
+def test_review_draft_and_task_completion_commit_atomically(client, fake_planner):
+    _prepare_matching_discovery(client)
+    fake_planner.result = PlannerResult(
+        json.dumps({
+            "connection_note": "Interested in the internship and your team.",
+            "follow_up_message": "I have experience building Python APIs.",
+            "evidence": ["Python APIs"],
+        }),
+        files=[],
+    )
+    _run_discovery(client)
+    draft = client.app.state.outreach_service.list()[0]
+    task = client.app.state.queue.claim_next({"outreach"})
+
+    client.app.state.outreach_service.handle_task(task)
+
+    saved = client.app.state.outreach_service.get(draft.id)
+    saved_task = client.app.state.queue.get(task.id)
+    assert saved.status == "needs_review"
+    assert saved_task.status == "needs_review"
+    assert saved_task.result == {"outreach_id": saved.id}
+    assert len(fake_planner.calls) == 1
+
+
+def test_recovered_prepared_outreach_does_not_call_planner_again(client, fake_planner):
+    _prepare_matching_discovery(client)
+    fake_planner.result = PlannerResult(
+        json.dumps({
+            "connection_note": "Interested in the internship and your team.",
+            "follow_up_message": "I have experience building Python APIs.",
+            "evidence": ["Python APIs"],
+        }),
+        files=[],
+    )
+    _run_discovery(client)
+    draft = client.app.state.outreach_service.list()[0]
+    assert client.app.state.worker.run_once()
+    assert client.app.state.outreach_service.get(draft.id).status == "needs_review"
+    assert client.app.state.queue.get(draft.task_id).status == "needs_review"
+    calls = len(fake_planner.calls)
+    with client.app.state.db.connect() as conn:
+        conn.execute("UPDATE tasks SET status='running',result_json=NULL WHERE id=?", (draft.task_id,))
+
+    assert client.app.state.queue.recover_after_restart() == 1
+    assert client.app.state.worker.run_once()
+
+    assert len(fake_planner.calls) == calls
+    assert client.app.state.outreach_service.get(draft.id).status == "needs_review"
+    task = client.app.state.queue.get(draft.task_id)
+    assert task.status == "needs_review", task
+
+
 def test_discovery_does_not_queue_outreach_without_profile_and_resume(client):
     app = client.app
     app.state.job_discovery_service.sources = [
@@ -201,7 +253,8 @@ def _prepare_matching_discovery(client):
 
 def _run_discovery(client):
     app = client.app
-    task = app.state.queue.get(app.state.queue.enqueue("job_discovery", {}, "ollama"))
+    app.state.queue.enqueue("job_discovery", {}, "ollama")
+    task = app.state.queue.claim_next({"job_discovery"})
     outcome = app.state.job_discovery_service.handle_task(task)
     app.state.queue.finish(task.id, outcome.result, outcome.status)
     return outcome

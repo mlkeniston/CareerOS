@@ -1,6 +1,6 @@
 # CareerOS Autonomous Workflows Design
 
-**Status:** Revised conversational design approved; written spec awaiting review
+**Status:** Approved
 **Date:** 2026-10-11
 **Scope:** Hiring and engineering/project QA are both active in the first release
 

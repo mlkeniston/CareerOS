@@ -1,4 +1,4 @@
-import { OfficeRenderer } from "./office-renderer.js";
+import { OfficeRenderer } from "./office-renderer.js?v=neon-office-fullbleed-20261011";
 
 const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, activeOutreach: null, office: null, officeSelection: null };
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -54,26 +54,40 @@ function notify(message) {
 
 function go(station) {
   const home = station === "home" || !$("#" + station + "-screen");
+  state.officeSelection = home ? null : { type: "station", id: station };
+  document.body.dataset.station = home ? "home" : station;
+  officeRenderer.setSelection(state.officeSelection);
   document.body.classList.toggle("office-active", home);
   document.body.classList.toggle("station-active", !home);
+  $$(".department-link").forEach(button => {
+    if (button.dataset.station === (home ? "home" : station)) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   $("#home-screen").hidden = !home;
   $$(".station-screen").forEach(screen => { screen.hidden = home || screen.id !== station + "-screen"; });
   hideWorkerTooltip();
   closeWorkerRoster();
+  closeInspectorDrawer();
+  renderInspector();
   if (home) window.requestAnimationFrame(() => officeRenderer.resize());
   if (home) {
+    startOfficePolling(false);
     refreshOverview();
-  } else if (station === "jobs") {
+  } else {
+    officeRenderer.setActive(false);
+    startOfficePolling(false);
+  }
+  if (!home && station === "jobs") {
     searchJobs();
-  } else if (station === "resume") {
+  } else if (!home && station === "resume") {
     loadResumeDesk();
-  } else if (station === "portfolio") {
+  } else if (!home && station === "portfolio") {
     loadProposals();
-  } else if (station === "applications") {
+  } else if (!home && station === "applications") {
     loadOfficeApplications();
-  } else if (station === "outreach") {
+  } else if (!home && station === "outreach") {
     loadOutreach();
-  } else if (station === "settings") {
+  } else if (!home && station === "settings") {
     loadSettings();
   }
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -231,6 +245,9 @@ async function refreshOffice() {
 
 function renderWorkerRoster(workers) {
   const list = $("#worker-roster");
+  const workingCount = workers.filter(worker => worker.status === "working").length;
+  $("#team-live-count").textContent = `${workingCount}/${workers.length}`;
+  $("#team-live-count").setAttribute("aria-label", `${workingCount} active out of ${workers.length} workers`);
   if (!workers.length) {
     list.replaceChildren(element("p", "roster-empty", "No office workers are available yet."));
     return;
@@ -333,6 +350,7 @@ function selectOffice(selection) {
   officeRenderer.setSelection(selection);
   renderWorkerRoster(state.office?.workers || []);
   renderInspector();
+  if (selection.type === "worker" && window.matchMedia("(max-width: 1050px)").matches) openInspectorDrawer();
 }
 
 function hideWorkerTooltip() {
@@ -374,18 +392,30 @@ function renderInspector() {
   const panel = $("#task-inspector");
   const heading = $("#inspector-heading");
   const copy = $("#inspector-copy");
+  const context = $("#inspector-context");
   const meta = $("#inspector-meta");
   const open = $("#inspector-open-station");
   const selection = state.officeSelection;
+  meta.replaceChildren();
   if (!selection) {
-    panel.hidden = true;
+    const workers = state.office?.workers || [];
+    const counts = state.office?.counts || {};
+    const reviewCount = (counts.drafts_to_review || 0) + (counts.outreach_to_review || 0) + (counts.proposals_to_review || 0);
+    context.textContent = "OFFICE STATUS";
+    heading.textContent = "Quick status";
+    copy.textContent = state.office ? "Your office is up to date." : "Connecting to your office…";
+    addInspectorMeta(meta, "Working now", workers.filter(worker => worker.status === "working").length);
+    addInspectorMeta(meta, "On shift", workers.length);
+    addInspectorMeta(meta, "Needs review", reviewCount);
+    open.hidden = true;
+    panel.hidden = false;
     return;
   }
   let target;
-  meta.replaceChildren();
   if (selection.type === "worker") {
     const worker = (state.office?.workers || []).find(item => item.id === selection.id);
-    if (!worker) { panel.hidden = true; return; }
+    if (!worker) { state.officeSelection = null; officeRenderer.setSelection(null); renderInspector(); return; }
+    context.textContent = "WORKER STATUS";
     heading.textContent = worker.department || worker.id;
     copy.textContent = worker.task_label || "Waiting for work";
     target = OFFICE_STATIONS[WORKER_STATIONS[worker.id]];
@@ -394,13 +424,14 @@ function renderInspector() {
     if (worker.since) addInspectorMeta(meta, "Working for", formatElapsed(worker.since));
   } else {
     target = OFFICE_STATIONS[selection.id];
-    if (!target) { panel.hidden = true; return; }
+    if (!target) { state.officeSelection = null; officeRenderer.setSelection(null); renderInspector(); return; }
+    context.textContent = "DEPARTMENT";
     heading.textContent = target.title;
     copy.textContent = target.description;
     const workers = (state.office?.workers || []).filter(worker => WORKER_STATIONS[worker.id] === selection.id);
     if (workers.length) addInspectorMeta(meta, "Team status", workers.map(worker => `${worker.department}: ${formatStatus(worker.status)}`).join(" · "));
   }
-  open.hidden = !target;
+  open.hidden = !target || document.body.dataset.station === target.target;
   if (target) {
     open.textContent = `Open ${target.title}`;
     open.dataset.station = target.target;
@@ -460,36 +491,61 @@ $("#autopilot-toggle").addEventListener("click", async () => {
 });
 
 $("#close-inspector").addEventListener("click", () => {
-  state.officeSelection = null;
-  officeRenderer.setSelection(null);
-  renderInspector();
-  renderWorkerRoster(state.office?.workers || []);
+  closeInspectorDrawer();
+  $("#toggle-inspector").focus();
 });
 
 function closeWorkerRoster() {
-  const panel = $("#worker-roster-panel");
-  if (!panel) return;
-  panel.hidden = true;
+  document.body.classList.remove("roster-open");
   $("#toggle-roster").setAttribute("aria-expanded", "false");
 }
 
 function toggleWorkerRoster() {
-  const panel = $("#worker-roster-panel");
-  const opening = panel.hidden;
-  panel.hidden = !opening;
+  const opening = !document.body.classList.contains("roster-open");
+  if (opening) closeInspectorDrawer();
+  document.body.classList.toggle("roster-open", opening);
   $("#toggle-roster").setAttribute("aria-expanded", String(opening));
   if (opening) {
     state.officeSelection = null;
     officeRenderer.setSelection(null);
     renderInspector();
-    $("#worker-roster").querySelector("button")?.focus();
+    $("#department-nav").querySelector("button")?.focus();
   }
+}
+
+function closeInspectorDrawer() {
+  document.body.classList.remove("details-open");
+  $("#toggle-inspector").setAttribute("aria-expanded", "false");
+}
+
+function toggleInspectorDrawer() {
+  const opening = !document.body.classList.contains("details-open");
+  if (opening) openInspectorDrawer();
+  else closeInspectorDrawer();
+}
+
+function openInspectorDrawer() {
+  closeWorkerRoster();
+  document.body.classList.add("details-open");
+  $("#toggle-inspector").setAttribute("aria-expanded", "true");
+  $("#inspector-heading").focus();
 }
 
 $("#toggle-roster").addEventListener("click", toggleWorkerRoster);
 $("#close-roster").addEventListener("click", () => {
   closeWorkerRoster();
   $("#toggle-roster").focus();
+});
+$("#toggle-inspector").addEventListener("click", toggleInspectorDrawer);
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  if (document.body.classList.contains("roster-open")) {
+    closeWorkerRoster();
+    $("#toggle-roster").focus();
+  } else if (document.body.classList.contains("details-open")) {
+    closeInspectorDrawer();
+    $("#toggle-inspector").focus();
+  }
 });
 
 $("#refresh-office-applications").addEventListener("click", loadOfficeApplications);
@@ -687,16 +743,30 @@ function copyOutreachButton(id, label, value) {
   return button;
 }
 
-function startOfficePolling() {
-  if (document.visibilityState !== "visible") return;
-  if (officePollTimer) window.clearInterval(officePollTimer);
-  refreshOffice();
+function startOfficePolling(refreshNow = true) {
+  if (document.visibilityState !== "visible") {
+    officeRenderer.setActive(false);
+    stopOfficePolling();
+    return;
+  }
+  officeRenderer.setActive(!$("#home-screen").hidden);
+  if (officePollTimer) return;
+  if (refreshNow) refreshOffice();
   officePollTimer = window.setInterval(refreshOffice, 2000);
+}
+
+function stopOfficePolling() {
+  if (!officePollTimer) return;
+  window.clearInterval(officePollTimer);
+  officePollTimer = null;
 }
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") startOfficePolling();
-  else if (officePollTimer) { window.clearInterval(officePollTimer); officePollTimer = null; }
+  else {
+    officeRenderer.setActive(false);
+    stopOfficePolling();
+  }
 });
 
 $("#close-inspector").setAttribute("aria-label", "Close selected details");

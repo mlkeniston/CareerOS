@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -43,8 +44,14 @@ def refresh_jobs(payload: RefreshInput, request: Request):
             result = source.fetch(query)
             count += request.app.state.job_repository.upsert_many(result.jobs)
             sources.append({"name": source.name, "saved": len(result.jobs), "warnings": result.warnings, "error": None})
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            label = "The feed timed out or returned invalid data." if isinstance(exc, (httpx.TimeoutException, ValueError, KeyError, TypeError)) else "The feed request failed. Cached jobs are still available."
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Job source refresh failed")
+            if isinstance(exc, httpx.TimeoutException):
+                label = "The feed timed out. Cached jobs are still available."
+            elif isinstance(exc, httpx.HTTPError):
+                label = "The feed request failed. Cached jobs are still available."
+            else:
+                label = "The feed returned invalid data. Cached jobs are still available."
             sources.append({"name": source.name, "saved": 0, "warnings": [], "error": label})
     return {"saved": count, "sources": sources}
 

@@ -90,6 +90,39 @@ def test_malformed_planner_output_saves_no_partial_packet(client, fake_planner):
     assert saved["draft"] is None
 
 
+def test_review_draft_and_task_completion_commit_atomically(client, fake_planner):
+    resume = client.post("/api/resumes", json={"name": "Backend", "text": "Python"}).json()
+    job = client.post("/api/jobs/manual", json={"title": "Intern", "company": "Acme", "url": "https://jobs.example/1"}).json()
+    started = client.post("/api/applications", json={"job_id": job["id"], "resume_id": resume["id"], "provider": "ollama"}).json()
+    task = client.app.state.queue.claim_next({"application"})
+
+    client.app.state.application_service.handle_task(task)
+
+    application = client.app.state.application_service.get(started["id"])
+    saved_task = client.app.state.queue.get(task.id)
+    assert application.status == "needs_review"
+    assert saved_task.status == "needs_review"
+    assert saved_task.result == {"application_id": application.id}
+    assert len(fake_planner.calls) == 1
+
+
+def test_recovered_prepared_application_does_not_call_planner_again(client, fake_planner):
+    resume = client.post("/api/resumes", json={"name": "Backend", "text": "Python"}).json()
+    job = client.post("/api/jobs/manual", json={"title": "Intern", "company": "Acme", "url": "https://jobs.example/1"}).json()
+    started = client.post("/api/applications", json={"job_id": job["id"], "resume_id": resume["id"], "provider": "ollama"}).json()
+    assert client.app.state.worker.run_once()
+    calls = len(fake_planner.calls)
+    with client.app.state.db.connect() as conn:
+        conn.execute("UPDATE tasks SET status='running',result_json=NULL WHERE id=?", (started["task_id"],))
+
+    assert client.app.state.queue.recover_after_restart() == 1
+    assert client.app.state.worker.run_once()
+
+    assert len(fake_planner.calls) == calls
+    assert client.app.state.application_service.get(started["id"]).status == "needs_review"
+    assert client.app.state.queue.get(started["task_id"]).status == "needs_review"
+
+
 def test_application_and_queue_task_are_inserted_atomically(client):
     resume = client.post("/api/resumes", json={"name": "Backend", "text": "Python"}).json()
     job = client.post("/api/jobs/manual", json={"title": "Intern", "company": "Acme", "url": "https://jobs.example/1"}).json()
@@ -117,6 +150,7 @@ def test_automatic_application_deduplicates_and_retries_a_failed_task(client):
     assert client.app.state.queue.get(task_id).cloud_confirmed is False
     assert service.create_automatic(job["id"], resume["id"], "application-fingerprint") is None
 
+    client.app.state.queue.claim_next({"application"})
     client.app.state.queue.fail(task_id, "local planner unavailable")
     retried, retry_task_id = service.create_automatic(job["id"], resume["id"], "application-fingerprint")
 

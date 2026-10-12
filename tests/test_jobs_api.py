@@ -40,6 +40,24 @@ def test_failed_refresh_keeps_cached_jobs(client):
     assert len(client.get("/api/jobs?q=intern").json()) == 1
 
 
+def test_unexpected_refresh_parser_error_keeps_cached_jobs(client):
+    cached = JobListing("fixture", "cached", "Backend Intern", "Acme", "Remote", "internship", "https://jobs.example/1", "Build APIs", None, "2026-10-09")
+    client.app.state.job_repository.upsert_many([cached])
+
+    class BrokenSource:
+        name = "broken fixture"
+
+        def fetch(self, query):
+            raise AttributeError("bad top-level JSON shape")
+
+    client.app.state.job_sources = [BrokenSource()]
+    response = client.post("/api/jobs/refresh", json={})
+
+    assert response.status_code == 200
+    assert response.json()["sources"][0]["error"]
+    assert len(client.get("/api/jobs?q=intern").json()) == 1
+
+
 def test_search_results_explain_local_technology_role_match(client):
     listing = JobListing("fixture", "intern", "Software Engineering Intern", "Acme", "Remote", "internship", "https://jobs.example/intern", "Build Python services", None, "2026-10-09")
     client.app.state.job_repository.upsert_many([listing])

@@ -66,18 +66,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             autopilot_state.clear_error()
 
-    worker = Worker(queue, before_claim=tick_autopilot)
+    worker = Worker(queue)
     worker.register("application", application_service.handle_task)
     worker.register("outreach", outreach_service.handle_task)
     worker.register("portfolio", portfolio_service.handle_task)
+    discovery_worker = Worker(queue, before_claim=tick_autopilot)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         queue.recover_after_restart()
         if settings.worker_enabled:
             worker.start()
+            discovery_worker.start()
         yield
         worker.stop()
+        discovery_worker.stop()
         feed_client.close()
         for planner in gateway.planners.values():
             client = getattr(planner, "client", None)
@@ -98,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.gateway = gateway
     app.state.outreach_planner = outreach_planner
     app.state.worker = worker
+    app.state.discovery_worker = discovery_worker
     app.state.job_repository = job_repository
     app.state.profile_repository = profile_repository
     app.state.resume_repository = resume_repository
@@ -123,7 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         outreach_service,
     )
     app.state.job_discovery_service = job_discovery_service
-    worker.register("job_discovery", job_discovery_service.handle_task)
+    discovery_worker.register("job_discovery", job_discovery_service.handle_task)
 
     for router in (health.router, settings_api.router, tasks.router, jobs.router, profiles.router, applications.router, outreach.router, portfolio.router, autopilot.router, workspace.router):
         app.include_router(router)
@@ -135,6 +139,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(static_dir / "index.html")
 
     return app
-
-
-app = create_app()

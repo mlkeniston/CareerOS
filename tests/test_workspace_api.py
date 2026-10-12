@@ -22,6 +22,9 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     review_app, review_task = app.state.application_service.create(job.id, resume.id, "ollama")
     approved_app, approved_task = app.state.application_service.create(job.id, resume.id, "ollama")
     queue = app.state.queue
+    assert queue.claim_next({"application"}).id == running_task
+    assert queue.claim_next({"application"}).id == review_task
+    assert queue.claim_next({"application"}).id == approved_task
     queue.finish(review_task, {"draft": "PRIVATE DRAFT CONTENT"}, "needs_review")
     queue.finish(approved_task, {"draft": "PRIVATE APPROVED CONTENT"}, "needs_review")
     with app.state.db.connect() as conn:
@@ -35,18 +38,23 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     applied_portfolio_task, applied_proposal_id = app.state.portfolio_service.create(
         PortfolioBrief("shipped", "Private applied proposal", "PRIVATE APPLIED BRIEF"), "ollama"
     )
+    assert queue.claim_next({"portfolio"}).id == review_portfolio_task
+    assert queue.claim_next({"portfolio"}).id == applied_portfolio_task
     queue.finish(review_portfolio_task, {"files": "PRIVATE PROPOSAL FILE"}, "needs_review")
     queue.finish(applied_portfolio_task, {"files": "PRIVATE APPLIED FILE"}, "needs_review")
     with app.state.db.connect() as conn:
         conn.execute("UPDATE portfolio_proposals SET status='needs_review',summary=? WHERE id=?", ("PRIVATE PROPOSAL SUMMARY", review_proposal_id))
         conn.execute("UPDATE portfolio_proposals SET status='applied' WHERE id=?", (applied_proposal_id,))
 
-    discovery_waiting = queue.enqueue("job_discovery", {"private": "PRIVATE TASK PAYLOAD"}, "ollama")
     discovery_failed = queue.enqueue("job_discovery", {}, "ollama")
+    assert queue.claim_next({"job_discovery"}).id == discovery_failed
     queue.fail(discovery_failed, "PRIVATE TASK ERROR")
     discovery_done = queue.enqueue("job_discovery", {}, "ollama")
+    assert queue.claim_next({"job_discovery"}).id == discovery_done
     queue.finish(discovery_done, {"jobs_found": 18, "private": "PRIVATE TASK RESULT"})
+    discovery_waiting = queue.enqueue("job_discovery", {"private": "PRIVATE TASK PAYLOAD"}, "ollama")
     outreach_draft, outreach_task = app.state.outreach_service.create_automatic(job.id, resume.id, "private-outreach")
+    assert queue.claim_next({"outreach"}).id == outreach_task
     queue.finish(outreach_task, {"outreach_id": outreach_draft.id}, "needs_review")
     with app.state.db.connect() as conn:
         conn.execute(
