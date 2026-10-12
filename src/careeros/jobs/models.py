@@ -39,6 +39,9 @@ class JobListing:
     id: str | None = None
     original_kind: str = ""
     is_saved: bool = False
+    source_url: str | None = None
+    employer_url: str | None = None
+    source_age: str | None = None
 
     def __post_init__(self):
         for name in ("source", "external_id", "title", "company"):

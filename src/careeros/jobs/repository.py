@@ -20,11 +20,12 @@ class JobRepository:
         with self.db.connect() as conn:
             for job in jobs:
                 values = asdict(job)
-                conn.execute("""INSERT INTO jobs(id,source,external_id,title,company,location,kind,original_kind,remote,url,description,published_at,fetched_at,is_saved)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,external_id) DO UPDATE SET
+                conn.execute("""INSERT INTO jobs(id,source,external_id,title,company,location,kind,original_kind,remote,url,description,published_at,fetched_at,is_saved,source_url,employer_url,source_age)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,external_id) DO UPDATE SET
                     title=excluded.title,company=excluded.company,location=excluded.location,kind=excluded.kind,original_kind=excluded.original_kind,
-                    remote=excluded.remote,url=excluded.url,description=excluded.description,published_at=excluded.published_at,fetched_at=excluded.fetched_at""",
-                    (values["id"] or str(uuid.uuid4()), values["source"], values["external_id"], values["title"], values["company"], values["location"], values["kind"], values["original_kind"], int(values["remote"]), values["url"], values["description"], values["published_at"], stamp, int(values["is_saved"])))
+                    remote=excluded.remote,url=excluded.url,description=excluded.description,published_at=excluded.published_at,fetched_at=excluded.fetched_at,
+                    source_url=excluded.source_url,employer_url=excluded.employer_url,source_age=excluded.source_age""",
+                    (values["id"] or str(uuid.uuid4()), values["source"], values["external_id"], values["title"], values["company"], values["location"], values["kind"], values["original_kind"], int(values["remote"]), values["url"], values["description"], values["published_at"], stamp, int(values["is_saved"]), values["source_url"], values["employer_url"], values["source_age"]))
         return len(jobs)
 
     def add_manual(self, job: JobListing) -> JobListing:
@@ -83,4 +84,4 @@ class JobRepository:
 
 
 def _job(row: sqlite3.Row) -> JobListing:
-    return JobListing(row["source"], row["external_id"], row["title"], row["company"], row["location"], row["kind"], row["url"], row["description"], row["published_at"], row["fetched_at"], bool(row["remote"]), row["id"], row["original_kind"], bool(row["is_saved"]))
+    return JobListing(row["source"], row["external_id"], row["title"], row["company"], row["location"], row["kind"], row["url"], row["description"], row["published_at"], row["fetched_at"], bool(row["remote"]), row["id"], row["original_kind"], bool(row["is_saved"]), row["source_url"], row["employer_url"], row["source_age"])

@@ -1,0 +1,3 @@
+ALTER TABLE jobs ADD COLUMN source_url TEXT;
+ALTER TABLE jobs ADD COLUMN employer_url TEXT;
+ALTER TABLE jobs ADD COLUMN source_age TEXT;

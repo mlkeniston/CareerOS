@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 
 from careeros.autopilot.discovery import JobDiscoveryService
@@ -8,6 +9,7 @@ from careeros.autopilot.scheduler import AutopilotScheduler
 from careeros.autopilot.state import AutopilotState
 from careeros.jobs.models import JobListing, JobQuery, SourceResult
 from careeros.jobs.repository import JobRepository
+from careeros.jobs.speedyapply import SpeedyApplySource
 from careeros.portfolio.service import PortfolioBrief
 from careeros.queue import TaskQueue
 from careeros.profiles.repository import ResumeRepository
@@ -113,6 +115,30 @@ def test_discovery_all_source_failures_preserve_cached_jobs(db):
         service.handle_task(task)
 
     assert [job.title for job in repository.search(JobQuery())] == ["Cached Software Intern"]
+
+
+def test_speedyapply_repeated_discovery_preserves_identity_and_provenance(db):
+    row = '| Acme | Software Intern | Remote | $40/hr | <a href="https://jobs.example.test/1">Apply</a> | 1d |'
+    source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=row))))
+    repository = JobRepository(db)
+    service = JobDiscoveryService(repository, [source])
+    queue = TaskQueue(db)
+    task = queue.get(queue.enqueue("job_discovery", {}, "ollama"))
+
+    service.handle_task(task)
+    first = repository.search(JobQuery())[0]
+    service.handle_task(task)
+    second = repository.search(JobQuery())
+
+    assert len(second) == 1
+    assert second[0].id == first.id
+    assert second[0].url == second[0].employer_url == "https://jobs.example.test/1"
+    assert second[0].source_url.startswith("https://github.com/speedyapply/")
+    assert second[0].source_age == "1d"
+
+
+def test_default_app_registers_speedyapply(client):
+    assert any(isinstance(source, SpeedyApplySource) for source in client.app.state.job_sources)
 
 
 def test_automatic_drafts_respect_preferred_locations_and_keep_the_listing_searchable(client):

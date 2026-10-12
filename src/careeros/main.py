@@ -19,6 +19,7 @@ from careeros.db import Database
 from careeros.jobs.arbeitnow import ArbeitnowSource
 from careeros.jobs.boards import GreenhouseSource, LeverSource
 from careeros.jobs.repository import JobRepository
+from careeros.jobs.speedyapply import SpeedyApplySource
 from careeros.planner.gateway import PlannerGateway
 from careeros.planner.ollama import OllamaPlanner
 from careeros.planner.openai import OpenAIPlanner
@@ -111,7 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.portfolio_paths = portfolio_paths
 
     feed_client = httpx.Client(timeout=httpx.Timeout(15, connect=5), headers={"User-Agent": "CareerOS/0.1"}, trust_env=False)
-    job_sources = [ArbeitnowSource(client=feed_client)]
+    job_sources = [ArbeitnowSource(client=feed_client), SpeedyApplySource(client=feed_client)]
     if settings.greenhouse_boards:
         job_sources.append(GreenhouseSource(feed_client, list(settings.greenhouse_boards)))
     if settings.lever_sites:
