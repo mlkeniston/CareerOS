@@ -200,6 +200,35 @@ def test_source_summary_is_markup_stripped_and_limited_to_two_thousand_character
     assert "<p>" not in result.items[0].summary
 
 
+def test_oversized_response_is_stopped_while_streaming():
+    class OversizedBody(httpx.SyncByteStream):
+        def __init__(self):
+            self.bytes_yielded = 0
+
+        def __iter__(self):
+            for _ in range(32):
+                chunk = b"x" * (64 * 1024)
+                self.bytes_yielded += len(chunk)
+                yield chunk
+
+        def close(self):
+            pass
+
+    streams: list[OversizedBody] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        stream = OversizedBody()
+        streams.append(stream)
+        return httpx.Response(200, stream=stream, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(respond), trust_env=False) as client:
+        result = GitHubProjectSource(client).fetch(["Python"])
+
+    assert result.items == []
+    assert result.warnings == ["GitHub: response exceeded the size limit."]
+    assert 2_000_000 < streams[0].bytes_yielded <= 2_000_000 + (64 * 1024)
+
+
 def test_malformed_empty_scan_warns_and_preserves_previously_cached_ideas(db, mock_project_sources):
     first = mock_project_sources.collect(["Python", "distributed systems"])
     before = ProjectIdeaRepository(db).list()

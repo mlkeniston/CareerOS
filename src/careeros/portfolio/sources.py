@@ -22,6 +22,7 @@ from careeros.workflows.errors import RetryableTaskError
 
 MAX_RESULTS = 20
 MAX_BODY_BYTES = 2_000_000
+MAX_READ_CHUNK_BYTES = 64 * 1024
 MAX_ROWS = 100
 MAX_WARNINGS = 10
 DEFAULT_TIMEOUT = httpx.Timeout(12, connect=4)
@@ -102,18 +103,37 @@ class _HTTPProjectSource:
 
     def _get(self, url: str, params: dict | None = None) -> tuple[httpx.Response | None, str | None]:
         try:
-            response = self.client.get(url, params=params, timeout=DEFAULT_TIMEOUT, headers={"User-Agent": USER_AGENT})
+            with self.client.stream(
+                "GET",
+                url,
+                params=params,
+                timeout=DEFAULT_TIMEOUT,
+                headers={"User-Agent": USER_AGENT},
+            ) as response:
+                if 500 <= response.status_code <= 599:
+                    raise RetryableTaskError(f"{self.name} project-idea source returned a temporary server error.")
+                if response.status_code != 200:
+                    return None, f"{self.name}: source returned HTTP {response.status_code}."
+
+                chunks: list[bytes] = []
+                size = 0
+                for chunk in response.iter_bytes(chunk_size=MAX_READ_CHUNK_BYTES):
+                    size += len(chunk)
+                    if size > MAX_BODY_BYTES:
+                        return None, f"{self.name}: response exceeded the size limit."
+                    chunks.append(chunk)
+                headers = {key: value for key, value in response.headers.items() if key.lower() != "content-length"}
+                bounded_response = httpx.Response(
+                    response.status_code,
+                    headers=headers,
+                    content=b"".join(chunks),
+                    request=response.request,
+                )
         except httpx.TimeoutException as exc:
             raise RetryableTaskError(f"{self.name} project-idea source timed out.") from exc
         except httpx.HTTPError:
             return None, f"{self.name}: source request failed."
-        if 500 <= response.status_code <= 599:
-            raise RetryableTaskError(f"{self.name} project-idea source returned a temporary server error.")
-        if response.status_code != 200:
-            return None, f"{self.name}: source returned HTTP {response.status_code}."
-        if len(response.content) > MAX_BODY_BYTES:
-            return None, f"{self.name}: response exceeded the size limit."
-        return response, None
+        return bounded_response, None
 
 
 class GitHubProjectSource(_HTTPProjectSource):
