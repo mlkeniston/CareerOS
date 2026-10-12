@@ -88,3 +88,44 @@ def test_after_and_latest_id_handle_empty_ledger(db):
     repo = WorkflowRepository(db)
     assert repo.after(0) == []
     assert repo.latest_id() == 0
+
+
+def test_upgrade_from_006_preserves_tasks(tmp_path):
+    import json
+    import sqlite3
+    from pathlib import Path
+
+    from careeros.db import Database
+
+    path = tmp_path / "legacy.sqlite3"
+    migration_dir = Path(__file__).parents[1] / "src" / "careeros" / "migrations"
+    legacy_migrations = sorted(migration_dir.glob("00[1-6]_*.sql"))
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        for migration in legacy_migrations:
+            conn.executescript(migration.read_text(encoding="utf-8"))
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (?)", (migration.name,))
+        conn.execute(
+            "INSERT INTO tasks(id,kind,payload_json,provider,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            ("queued-legacy", "job_discovery", json.dumps({"query": "remote"}), "ollama", "queued", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.execute(
+            "INSERT INTO tasks(id,kind,payload_json,provider,status,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            ("completed-legacy", "application_draft", json.dumps({"job_id": "job-1"}), "ollama", "completed", json.dumps({"draft": "ready"}), "2026-01-01T01:00:00+00:00", "2026-01-01T02:00:00+00:00"),
+        )
+
+    db = Database(path)
+    db.initialize()
+    db.initialize()
+
+    queue = TaskQueue(db)
+    queued = queue.get("queued-legacy")
+    completed = queue.get("completed-legacy")
+    assert queued is not None
+    assert (queued.status, queued.payload, queued.provider) == ("queued", {"query": "remote"}, "ollama")
+    assert completed is not None
+    assert (completed.status, completed.result) == ("completed", {"draft": "ready"})
+    assert completed.attempt_count == 0
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version='007_workflow_handoffs.sql'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version='008_task_retries.sql'").fetchone()[0] == 1
