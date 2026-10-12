@@ -937,8 +937,8 @@ $("#prepare-form").addEventListener("submit", async event => {
   } catch (error) { notify(error.message); }
 });
 
-async function pollApplication(id, renderedAt = null) {
-  const pollId = state.applicationPollId = (state.applicationPollId || 0) + 1;
+async function pollApplication(id, renderedAt = null, generation = null) {
+  const pollId = generation ?? (state.applicationPollId = (state.applicationPollId || 0) + 1);
   for (let attempt = 0; attempt < 180; attempt++) {
     if (pollId !== state.applicationPollId || document.body.dataset.station !== "applications") return;
     const application = await api(`/api/applications/${encodeURIComponent(id)}`);
@@ -949,8 +949,11 @@ async function pollApplication(id, renderedAt = null) {
       renderedAt = renderKey;
     }
     if (!["preparing", "manager_review"].includes(application.status) || ["failed", "interrupted"].includes(application.manager_task_status)) {
-      renderApplications(await api("/api/applications"));
+      const applications = await api("/api/applications");
+      if (pollId !== state.applicationPollId) return;
+      renderApplications(applications);
       await loadOfficeApplications();
+      if (pollId !== state.applicationPollId) return;
       refreshOverview();
       return;
     }
@@ -959,15 +962,18 @@ async function pollApplication(id, renderedAt = null) {
 }
 
 async function loadApplication(id) {
+  const generation = state.applicationPollId = (state.applicationPollId || 0) + 1;
   if (document.body.dataset.station !== "applications") go("applications");
   try {
     const application = await api(`/api/applications/${encodeURIComponent(id)}`);
+    if (generation !== state.applicationPollId) return;
     renderApplicationReview(application, true);
     if (["preparing", "manager_review"].includes(application.status)) {
-      pollApplication(id, `${application.updated_at}:${application.manager_task_status}`).catch(error => notify(error.message));
+      pollApplication(id, `${application.updated_at}:${application.manager_task_status}`, generation)
+        .catch(error => { if (generation === state.applicationPollId) notify(error.message); });
     }
   }
-  catch (error) { notify(error.message); }
+  catch (error) { if (generation === state.applicationPollId) notify(error.message); }
 }
 
 function renderApplicationReview(application, focus = false) {
@@ -1047,14 +1053,16 @@ function renderApplicationReview(application, focus = false) {
   if (application.status === "needs_review" && !application.clearance_stale) {
     const approve = element("button", "button button-dark", "Approve for local download"); approve.type = "button";
     approve.setAttribute("aria-label", "Approve for local download. Nothing will be submitted.");
-    approve.addEventListener("click", async () => { try {
-      if (changed()) throw new Error("Save your edits and wait for Hiring Manager clearance before approving.");
+    approve.addEventListener("click", async () => {
+      if (changed()) { notify("Save your edits and wait for Hiring Manager clearance before approving."); return; }
+      try {
       await api(`/api/applications/${encodeURIComponent(application.id)}/approve`, {method: "POST"}); notify("Approved for local download. Nothing was submitted."); await refresh();
     } catch (error) { notify(error.message); await refresh(); } }); actions.prepend(approve);
   } else if (application.status === "approved") {
     const download = element("button", "button button-dark", "Download package"); download.type = "button";
-    download.addEventListener("click", async () => { try {
-      if (changed()) throw new Error("Save edits for another review before downloading changed materials.");
+    download.addEventListener("click", async () => {
+      if (changed()) { notify("Save edits for another review before downloading changed materials."); return; }
+      try {
       const response = await fetch(`/api/applications/${encodeURIComponent(application.id)}/export`);
       if (!response.ok) { const error = await response.json(); throw new Error(error.detail || "Package download failed"); }
       const url = URL.createObjectURL(await response.blob()); const link = element("a"); link.href = url; link.download = `application-${application.id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify("Local package downloaded. Nothing was submitted.");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import test from "node:test";
 
 const layoutSource = await readFile(new URL("../src/careeros/static/office-layout.js", import.meta.url), "utf8");
@@ -338,6 +339,136 @@ test('application review uses current evidence schema and explicit local actions
   assert.ok(!app.includes('resume_alignment'));
   assert.ok(html.indexOf('id="application-review"') < html.indexOf('id="outreach-screen"'));
 });
+
+function makeElement(tag = "div", className = "", textContent = "") {
+  return {
+    tag, className, textContent, children: [], handlers: {}, dataset: {}, value: "", hidden: false,
+    append(...children) { this.children.push(...children); },
+    prepend(...children) { this.children.unshift(...children); },
+    replaceChildren(...children) { this.children = [...children]; },
+    setAttribute() {},
+    addEventListener(name, handler) { this.handlers[name] = handler; },
+    focus() {},
+  };
+}
+
+function descendants(root) {
+  return [root, ...root.children.flatMap(descendants)];
+}
+
+async function applicationReviewHarness(api, extra = {}, includeReview = false) {
+  const app = await readFile(new URL("../src/careeros/static/app.js", import.meta.url), "utf8");
+  const pollStart = app.indexOf("async function pollApplication(");
+  const renderStart = app.indexOf("function renderApplicationReview(");
+  const portfolioStart = app.indexOf('$("#portfolio-brief").addEventListener', renderStart);
+  const pollAndLoadSource = app.slice(pollStart, renderStart);
+  const reviewSource = includeReview ? app.slice(renderStart, portfolioStart) : "";
+  const rendered = [];
+  const notifications = [];
+  const panel = makeElement("section");
+  const calls = [];
+  const context = {
+    state: { applicationPollId: 0 },
+    document: { body: { dataset: { station: "applications" } }, createElement: tag => makeElement(tag) },
+    window: extra.window || { setTimeout: callback => new Promise(resolve => { if (callback) callback(); resolve(); }) },
+    $: selector => selector === "#application-review" ? panel : null,
+    element: (tag, className = "", text = "") => makeElement(tag, className, text),
+    formatStatus: value => value,
+    api: async url => { calls.push({url}); return api(url); },
+    notify: message => notifications.push(message),
+    go() {},
+    renderApplicationReview: application => rendered.push(application.id),
+    renderApplications() {},
+    loadOfficeApplications: async () => {},
+    refreshOverview() {},
+    saveApplicationDraft: async () => {},
+    askCloud: async () => false,
+    fetch: async url => { calls.push({url, fetch: true}); return {ok: true, blob: async () => new Blob()}; },
+    URL: { createObjectURL: () => "blob:test", revokeObjectURL() {} },
+    setTimeout: () => 0,
+    ...extra,
+  };
+  vm.createContext(context);
+  vm.runInContext(`${pollAndLoadSource}\n${reviewSource}\nglobalThis.__functions = {pollApplication, loadApplication, renderApplicationReview};`, context);
+  return {context, panel, rendered, notifications, calls};
+}
+
+const applicationRecord = (id, status, updated_at = "v1") => ({
+  id, status, updated_at, job_title: `Job ${id}`, clearance_stale: false, manager_cycle: 1,
+  manager_task_status: status === "manager_review" ? "running" : "completed",
+  draft: {resume_text: "Original resume", cover_letter: "Original letter", answers: {}, claims: []},
+  hiring_reviews: [], snapshot: {evidence: {}},
+});
+
+test("selecting a cleared application invalidates an older pending review poll", async () => {
+  let resolveA;
+  let markAStarted;
+  const aStarted = new Promise(resolve => { markAStarted = resolve; });
+  const harness = await applicationReviewHarness(url => {
+    if (url === "/api/applications") return [];
+    const id = decodeURIComponent(url.match(/applications\/([^/]+)/)[1]);
+    if (id === "A") {
+      markAStarted();
+      return new Promise(resolve => { resolveA = resolve; });
+    }
+    return applicationRecord(id, "needs_review");
+  });
+
+  const pollA = harness.context.pollApplication("A");
+  await aStarted;
+  await harness.context.loadApplication("B");
+  resolveA(applicationRecord("A", "needs_review"));
+  await pollA;
+
+  assert.deepEqual(harness.rendered, ["B"], "the older poll must not replace the selected application");
+});
+
+test("out-of-order application detail GETs only render the latest selection", async () => {
+  const pending = new Map();
+  const harness = await applicationReviewHarness(url => new Promise(resolve => {
+    const id = decodeURIComponent(url.match(/applications\/([^/]+)/)[1]);
+    pending.set(id, resolve);
+  }));
+
+  const loadA = harness.context.loadApplication("A");
+  await new Promise(resolve => setImmediate(resolve));
+  const loadB = harness.context.loadApplication("B");
+  await new Promise(resolve => setImmediate(resolve));
+  pending.get("B")(applicationRecord("B", "needs_review"));
+  await loadB;
+  pending.get("A")(applicationRecord("A", "needs_review"));
+  await loadA;
+
+  assert.deepEqual(harness.rendered, ["B"], "a late response for the previous selection must be ignored");
+});
+
+for (const [label, status, actionText] of [
+  ["approval", "needs_review", "Approve for local download"],
+  ["download", "approved", "Download package"],
+]) {
+  test(`blocked ${label} retains unsaved application edits`, async () => {
+    const record = applicationRecord("A", status);
+    const exportCalls = [];
+    const harness = await applicationReviewHarness(async url => {
+      if (url === "/api/applications/A") return record;
+      if (url === "/api/applications") return [record];
+      throw new Error(`Unexpected API request: ${url}`);
+    }, {fetch: async url => { exportCalls.push(url); return {ok: true, blob: async () => new Blob()}; }}, true);
+
+    harness.context.renderApplicationReview(record);
+    const nodes = descendants(harness.panel);
+    await nodes.find(node => node.tag === "button" && node.textContent === "Edit").handlers.click();
+    const resume = descendants(harness.panel).find(node => node.tag === "textarea" && node.dataset.field === "resume_text");
+    resume.value = "My unsaved improvement";
+    await descendants(harness.panel).find(node => node.tag === "button" && node.textContent === actionText).handlers.click();
+
+    const retained = descendants(harness.panel).find(node => node.tag === "textarea" && node.dataset.field === "resume_text");
+    assert.equal(retained.value, "My unsaved improvement", "a blocked action must not rerender over local text");
+    assert.equal(harness.calls.some(call => call.url.endsWith("/approve")), false, "dirty text must not be approved");
+    assert.deepEqual(exportCalls, [], "dirty text must not be exported");
+    assert.ok(harness.notifications.some(message => message.toLowerCase().includes("save")));
+  });
+}
 
 test('real persisted application handoffs animate into and out of the Hiring Manager station', async () => {
   const { execFileSync } = await import('node:child_process');

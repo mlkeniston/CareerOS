@@ -238,3 +238,49 @@ def test_hiring_manager_worker_reports_persisted_review_and_hold(client):
     manager = next(w for w in client.get('/api/workspace').json()['workers'] if w['id'] == 'hiring-manager')
     assert manager['status'] == 'quality_hold'
     assert manager['hold_reason'] == 'Posting closed'
+
+
+def test_hiring_manager_workspace_prefers_running_task_then_oldest_queued(client):
+    app = client.app
+    resume = app.state.resume_repository.create('Base', 'Built a Python API')
+    applications = []
+    titles = [f'Software Intern {letter}' for letter in ('A', 'B', 'C')]
+    for index, title in enumerate(titles):
+        job = app.state.job_repository.add_manual(JobListing(
+            'fixture', f'manager-{index}', title, 'Acme', 'Remote', 'internship',
+            f'https://jobs.example/manager-{index}', 'Build Python APIs', None, '2026-10-09',
+        ))
+        seed_verified_application_job(app, job.id)
+        applications.append((title, job.id))
+    app.state.profile_repository.update('', '', titles, [], [])
+
+    queue = app.state.queue
+    tasks = []
+    for title, job_id in applications:
+        application, _ = app.state.application_service.create(job_id, resume.id, 'ollama')
+        task_id = queue.enqueue('hiring_manager', {'application_id': application.id}, 'ollama')
+        tasks.append((title, application.id, task_id))
+
+    timestamps = [
+        ('2026-10-09T12:00:00+00:00', 'running'),
+        ('2026-10-09T12:01:00+00:00', 'queued'),
+        ('2026-10-09T12:02:00+00:00', 'queued'),
+    ]
+    with app.state.db.connect() as conn:
+        for (title, application_id, task_id), (created_at, status) in zip(tasks, timestamps):
+            conn.execute('UPDATE tasks SET status=?,created_at=?,updated_at=? WHERE id=?',
+                         (status, created_at, created_at, task_id))
+            conn.execute("UPDATE applications SET status='manager_review',manager_task_id=?,updated_at=? WHERE id=?",
+                         (task_id, created_at, application_id))
+
+    manager = next(worker for worker in client.get('/api/workspace').json()['workers'] if worker['id'] == 'hiring-manager')
+    assert manager['current_item'] == titles[0]
+    assert manager['task_id'] == tasks[0][2]
+    assert manager['status'] == 'working'
+
+    with app.state.db.connect() as conn:
+        conn.execute("UPDATE tasks SET status='completed' WHERE id=?", (tasks[0][2],))
+    manager = next(worker for worker in client.get('/api/workspace').json()['workers'] if worker['id'] == 'hiring-manager')
+    assert manager['current_item'] == titles[1]
+    assert manager['task_id'] == tasks[1][2]
+    assert manager['status'] == 'manager_review'
