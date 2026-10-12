@@ -23,6 +23,10 @@ from careeros.workflows.errors import RetryableTaskError
 from careeros.applications.models import ApplicationDraft, EvidenceItem, InvalidPlannerOutput, validate_claims
 
 
+class ApplicationPostingChanged(RuntimeError):
+    """The fixed employer evidence no longer describes a verified current posting."""
+
+
 @dataclass(slots=True)
 class Application:
     id: str
@@ -41,6 +45,7 @@ class Application:
     revision_task_id: str | None = None
     manager_cycle: int = 0
     manager_task_id: str | None = None
+    hold_reason: str | None = None
 
 
 class ApplicationService:
@@ -283,7 +288,39 @@ class ApplicationService:
                                    (application.id, application.manager_cycle, application.draft_version)).fetchone()
         if application.clearance_stale or not cleared:
             raise RuntimeError('Hiring Manager must clear the current draft before approval or export.')
-        self._snapshot(application.job_id, application.resume_id, require_ready=True)
+        try:
+            self.require_current_posting(application)
+        except ApplicationPostingChanged as exc:
+            with self.db.connect() as conn:
+                self.hold_changed_posting(conn, application, str(exc))
+            raise RuntimeError('Application is on quality hold: ' + str(exc)) from exc
+
+    def require_current_posting(self, application: Application) -> None:
+        """Check current gates and material posting data against the frozen evidence."""
+        if application.snapshot is None or _snapshot_token(application.snapshot) != application.snapshot_hash:
+            raise ApplicationPostingChanged('Employer posting evidence snapshot is invalid. Prepare a new verified application.')
+        try:
+            current = self._snapshot(application.job_id, application.resume_id, require_ready=True)
+        except (RuntimeError, LookupError) as exc:
+            raise ApplicationPostingChanged('Employer posting is missing, uncertain, or no longer eligible: ' + str(exc)) from exc
+        frozen_job, current_job = application.snapshot['job'], current['job']
+        frozen_verification, current_verification = frozen_job.get('verification'), current_job.get('verification')
+        if not frozen_verification or not frozen_verification.get('fingerprint') or not current_verification or not current_verification.get('fingerprint'):
+            raise ApplicationPostingChanged('Employer posting fingerprint is missing or uncertain. Prepare a new verified application.')
+        # Verification timestamps/reasons and gate timestamps are bookkeeping;
+        # employer evidence and posting identity remain fixed for this application.
+        identity_fields = ('id', 'title', 'company', 'location', 'description', 'url', 'source_url',
+                           'kind', 'original_kind', 'remote', 'source', 'external_id', 'listing_url', 'employer_url')
+        changed = [field for field in identity_fields if field in frozen_job and
+                   _posting_value(frozen_job[field], field) != _posting_value(current_job.get(field), field)]
+        changed += ['verification.' + field for field in ('text', 'fingerprint', 'final_url') if
+                    _posting_value(frozen_verification.get(field), field) != _posting_value(current_verification.get(field), field)]
+        if changed:
+            raise ApplicationPostingChanged('Employer posting changed (' + ', '.join(changed) + '). Prepare a new verified application; the fixed snapshot cannot be refreshed.')
+
+    def hold_changed_posting(self, conn, application: Application, reason: str) -> None:
+        conn.execute("UPDATE applications SET status='quality_hold',clearance_stale=1,hold_reason=?,updated_at=? WHERE id=? AND snapshot_hash=?",
+                     (reason[:2000], now(), application.id, application.snapshot_hash))
 
     def _model(self, provider: str) -> str:
         return str(getattr(self.gateway.planners.get(provider), 'model', 'unknown'))
@@ -319,7 +356,9 @@ class ApplicationService:
         # promoted into a verified description or used as candidate evidence.
         job_data = {'id': job_id, 'title': job['title'], 'company': job['company'], 'location': job['location'],
                     'description': verification['text'] if verified else '', 'url': verification['final_url'] if verified else job['url'],
-                    'source_url': job['source_url'], 'verification': dict(verification) if verification else None,
+                    'source_url': job['source_url'], 'kind': job['kind'], 'original_kind': job['original_kind'],
+                    'remote': bool(job['remote']), 'source': job['source'], 'external_id': job['external_id'],
+                    'listing_url': job['url'], 'employer_url': job['employer_url'], 'verification': dict(verification) if verification else None,
                     'gates': gates}
         evidence = [EvidenceItem('resume:1', 'resume', resume['text'])]
         if profile_data['summary']:
@@ -334,6 +373,14 @@ class ApplicationService:
                 'provider_models': {provider: self._model(provider) for provider in ('ollama', 'openai')},
                 'versions': {'profile': _snapshot_token(profile_data), 'resume': _snapshot_token(dict(resume)),
                              'job': _snapshot_token(job_data)}, 'evidence': {item.id: asdict(item) for item in evidence}}
+
+
+def _posting_value(value, field):
+    if isinstance(value, str):
+        value = ' '.join(value.split())
+        if field in {'title', 'company', 'location', 'kind', 'original_kind'}:
+            value = value.casefold()
+    return value
 
 
 def evidence_from_snapshot(snapshot: dict) -> dict[str, EvidenceItem]:
@@ -357,4 +404,4 @@ def _application(row: sqlite3.Row) -> Application:
     return Application(row['id'], row['job_id'], row['resume_id'], row['task_id'], row['status'],
                        json.loads(row['draft_json']) if row['draft_json'] else None, row['updated_at'],
                        json.loads(row['snapshot_json']) if row['snapshot_json'] else None, row['snapshot_hash'],
-                       row['provider'], row['model'], row['draft_version'], bool(row['clearance_stale']), row['revision_task_id'], row['manager_cycle'], row['manager_task_id'])
+                       row['provider'], row['model'], row['draft_version'], bool(row['clearance_stale']), row['revision_task_id'], row['manager_cycle'], row['manager_task_id'], row['hold_reason'])

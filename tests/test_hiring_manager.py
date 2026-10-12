@@ -295,3 +295,90 @@ def test_approval_refuses_draft_that_changes_during_validation(hiring_pipeline, 
     with pytest.raises(RuntimeError, match='changed'):
         p.service.approve(p.id)
     assert p.service.get(p.id).status == 'needs_review'
+
+
+@pytest.mark.parametrize('changed_field', ['text', 'fingerprint', 'final_url', 'title', 'company', 'location', 'source_url'])
+def test_changed_posting_before_manager_review_persists_hold(hiring_pipeline, changed_field):
+    p = hiring_pipeline
+    frozen = p.service.get(p.id).snapshot
+    changed_text = ('Acme Backend Intern. Build Rust embedded robotics and firmware tools for our engineering team. '
+                    'Collaborate on practical software projects, write clear documentation, solve technical problems, '
+                    'and improve reliable services for our customers.')
+    with p.db.connect() as conn:
+        if changed_field in {'text', 'fingerprint', 'final_url'}:
+            value = {'text': changed_text, 'fingerprint': 'changed-employer-version', 'final_url': 'https://jobs.example/other'}[changed_field]
+            conn.execute(f'UPDATE job_verifications SET {changed_field}=?', (value,))
+        else:
+            value = {'title': 'Backend Intern Robotics', 'company': 'Other Employer', 'location': 'Boston', 'source_url': 'https://feed.example/other'}[changed_field]
+            conn.execute(f'UPDATE jobs SET {changed_field}=?', (value,))
+    review(p, PASS)
+    application = p.service.get(p.id)
+    assert application.status == 'quality_hold'
+    assert application.clearance_stale
+    assert application.hold_reason
+    assert 'changed' in application.hold_reason.lower()
+    assert application.snapshot == frozen
+    assert history(p)[0]['verdict'] == 'revise'
+    assert history(p)[0]['findings'][-1]['severity'] == 'blocking'
+    assert not any(task.kind == 'application_revision' for task in p.queue.list())
+
+
+@pytest.mark.parametrize('action', ['approve', 'export_markdown'])
+@pytest.mark.parametrize('current_record', ['changed', 'missing', 'uncertain'])
+def test_changed_posting_after_pass_persists_hold_before_approval_or_export(hiring_pipeline, action, current_record):
+    p = hiring_pipeline
+    review(p, PASS)
+    if action == 'export_markdown':
+        p.service.approve(p.id)
+    frozen = p.service.get(p.id).snapshot
+    with p.db.connect() as conn:
+        if current_record == 'changed':
+            conn.execute("UPDATE job_verifications SET fingerprint='new-employer-version'")
+        elif current_record == 'missing':
+            conn.execute('DELETE FROM job_verifications')
+        else:
+            conn.execute("UPDATE job_verifications SET status='held'")
+    with pytest.raises(RuntimeError, match='quality hold'):
+        getattr(p.service, action)(p.id)
+    application = p.service.get(p.id)
+    assert application.status == 'quality_hold'
+    assert application.clearance_stale
+    assert application.hold_reason
+    assert application.snapshot == frozen
+    assert history(p)[0]['verdict'] == 'pass'  # historical pass is preserved
+    assert p.client.get(f'/api/applications/{p.id}').json()['hold_reason'] == application.hold_reason
+
+
+def test_same_posting_reverification_metadata_does_not_invalidate_clearance(hiring_pipeline):
+    p = hiring_pipeline
+    with p.db.connect() as conn:
+        conn.execute("UPDATE job_verifications SET checked_at='later-check',reason='Checked again successfully'")
+        conn.execute("UPDATE job_gate_results SET checked_at='later-check',reason='Still passing'")
+    review(p, PASS)
+    assert p.service.approve(p.id).status == 'approved'
+    assert 'Built a Python API' in p.service.export_markdown(p.id)
+
+
+@pytest.mark.parametrize('status', [404, 429, 500, 503, 400, 401, 403, 422])
+def test_real_ollama_http_availability_errors_follow_retry_policy(hiring_pipeline, status):
+    import httpx
+    from careeros.planner.ollama import OllamaPlanner
+    p = hiring_pipeline
+    task_id = p.manager.enqueue(p.id)
+    before = p.service.get(p.id)
+    planner = OllamaPlanner('http://127.0.0.1:11434', 'unknown')
+    planner.client.close()
+    planner.client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(status, json={'error': 'model missing or service error'})))
+    p.client.app.state.gateway.planners['ollama'] = planner
+    try:
+        assert p.worker.run_once()
+        task = p.queue.get(task_id)
+        retryable = status in {404, 429} or status >= 500
+        assert task.status == ('queued' if retryable else 'failed')
+        assert bool(task.available_at) is retryable
+        assert task.attempt_count == 1
+        assert p.service.get(p.id) == before
+        assert history(p) == []
+        assert p.queue.get(task_id).provider == 'ollama'
+    finally:
+        planner.client.close()

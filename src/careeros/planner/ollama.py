@@ -2,6 +2,7 @@ import httpx
 from typing import Literal
 
 from careeros.planner.protocols import PlannerRequest, PlannerResult
+from careeros.planner.gateway import ProviderUnavailable
 
 
 class OllamaPlanner:
@@ -16,7 +17,14 @@ class OllamaPlanner:
             "stream": False,
             "messages": [{"role": "system", "content": request.instruction}, {"role": "user", "content": "Return only the requested result for task: " + request.task}],
         })
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Share provider availability classification across local departments;
+            # the worker owns bounded retry/backoff and never changes providers.
+            if exc.response.status_code in {404, 429} or 500 <= exc.response.status_code <= 599:
+                raise ProviderUnavailable('Local model is missing or temporarily unavailable.') from exc
+            raise
         data = response.json()
         return PlannerResult(text=data.get("message", {}).get("content", ""))
 

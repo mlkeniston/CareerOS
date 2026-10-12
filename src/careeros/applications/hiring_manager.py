@@ -6,7 +6,7 @@ import json
 import httpx
 
 from careeros.applications.models import ApplicationDraft, InvalidPlannerOutput
-from careeros.applications.service import _snapshot_token, evidence_from_snapshot
+from careeros.applications.service import ApplicationPostingChanged, _snapshot_token, evidence_from_snapshot
 from careeros.planner.gateway import ProviderUnavailable
 from careeros.planner.protocols import PlannerRequest
 from careeros.queue import Task, now
@@ -91,10 +91,6 @@ class HiringManagerService:
             self.applications._validate(ApplicationDraft.parse(application.draft), application.snapshot)
         except (InvalidPlannerOutput, ValueError) as exc:
             findings.append(_deterministic_finding('Candidate evidence validation failed', str(exc)))
-        try:
-            self.applications._snapshot(application.job_id, application.resume_id, require_ready=True)
-        except (RuntimeError, LookupError) as exc:
-            findings.append(_deterministic_finding('Application gates failed', str(exc)))
         if any(item['severity'] == 'blocking' for item in findings):
             verdict = 'revise'
         with self.db.connect() as conn:
@@ -102,11 +98,20 @@ class HiringManagerService:
             row = conn.execute('SELECT * FROM applications WHERE id=?', (app_id,)).fetchone()
             if row['draft_version'] != task.payload['draft_version'] or row['manager_task_id'] != task.id or row['status'] != 'manager_review':
                 return TaskOutcome('completed', {'application_id': app_id, 'cycle': cycle, 'superseded': True})
+            posting_hold = None
+            try:
+                self.applications.require_current_posting(application)
+            except ApplicationPostingChanged as exc:
+                posting_hold = str(exc)
+                findings.append(_deterministic_finding('Employer posting changed or no longer verified', posting_hold))
+                verdict = 'revise'
             conn.execute('INSERT INTO hiring_reviews VALUES(?,?,?,?,?,?,?,?)',
                          (app_id, cycle, verdict, json.dumps(findings), task.provider, task.payload['selected_model'], now(), row['draft_version']))
-            status = 'needs_review' if verdict == 'pass' else ('quality_hold' if cycle >= 3 else 'manager_review')
+            status = 'needs_review' if verdict == 'pass' else ('quality_hold' if cycle >= 3 or posting_hold else 'manager_review')
             conn.execute('UPDATE applications SET status=?,clearance_stale=?,updated_at=? WHERE id=?',
                          (status, int(verdict != 'pass'), now(), app_id))
+            if posting_hold:
+                self.applications.hold_changed_posting(conn, application, posting_hold)
             self.workflows.record(conn, idempotency_key=f'application:{app_id}:manager:{cycle}:returned',
                                   task_id=task.id, object_type='findings-ticket', object_id=app_id,
                                   from_worker='hiring-manager-01', to_worker='application-team-01',

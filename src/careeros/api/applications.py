@@ -96,7 +96,7 @@ def get_application(application_id: str, request: Request):
     job = request.app.state.job_repository.get(item.job_id)
     task = request.app.state.queue.get(item.task_id) if item.task_id else None
     status = "interrupted" if item.status == "preparing" and task and task.status == "interrupted" else item.status
-    return {"id": item.id, "job_id": item.job_id, "resume_id": item.resume_id, "task_id": item.task_id, "status": status, "draft": item.draft, "job_title": job.title if job else "Saved job", "task_status": task.status if task else None, "task_error": task.error if task else None, "task_provider": task.provider if task else None, "snapshot": item.snapshot, "snapshot_hash": item.snapshot_hash, "provider": item.provider, "model": item.model, "draft_version": item.draft_version, "clearance_stale": item.clearance_stale, "manager_cycle": item.manager_cycle, "manager_task_id": item.manager_task_id, "hiring_reviews": request.app.state.hiring_manager_service.history(application_id)}
+    return {"id": item.id, "job_id": item.job_id, "resume_id": item.resume_id, "task_id": item.task_id, "status": status, "draft": item.draft, "job_title": job.title if job else "Saved job", "task_status": task.status if task else None, "task_error": task.error if task else None, "task_provider": task.provider if task else None, "snapshot": item.snapshot, "snapshot_hash": item.snapshot_hash, "provider": item.provider, "model": item.model, "draft_version": item.draft_version, "clearance_stale": item.clearance_stale, "manager_cycle": item.manager_cycle, "manager_task_id": item.manager_task_id, "hold_reason": item.hold_reason, "hiring_reviews": request.app.state.hiring_manager_service.history(application_id)}
 
 
 @router.put("/api/applications/{application_id}/draft")
