@@ -81,6 +81,54 @@ def test_speedyapply_raises_when_every_file_fails():
         SpeedyApplySource(client).fetch(JobQuery())
 
 
+def test_speedyapply_limit_applies_across_files():
+    def respond(request):
+        filename = request.url.path.rsplit("/", 1)[-1]
+        row = f'| Acme | Software Intern | Remote | $40/hr | <a href="https://jobs.example.test/{filename}">Apply</a> | 1d |'
+        return httpx.Response(200, text=row)
+
+    source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(respond)))
+
+    result = source.fetch(JobQuery(limit=1))
+
+    assert len(result.jobs) == 1
+    assert result.jobs[0].employer_url == "https://jobs.example.test/README.md"
+
+
+@pytest.mark.parametrize("body", ["", "# Repository layout has changed\nNo table here.", "| Company | Position | Location | Apply |\n| --- | --- | --- | --- |"])
+def test_speedyapply_rejects_successful_http_responses_without_expected_table(body):
+    source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body))))
+
+    with pytest.raises(ValueError, match="SpeedyApply"):
+        source.fetch(JobQuery())
+
+
+def test_speedyapply_reports_non_table_file_but_keeps_valid_file():
+    row = '| Acme | Software Intern | Remote | $40/hr | <a href="https://jobs.example.test/1">Apply</a> | 1d |'
+
+    def respond(request):
+        body = row if request.url.path.endswith("README.md") else "# Changed format"
+        return httpx.Response(200, text=body)
+
+    source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(respond)))
+
+    result = source.fetch(JobQuery())
+
+    assert len(result.jobs) == 1
+    assert len(result.warnings) == 3
+    assert all("feed unavailable or malformed" in warning for warning in result.warnings)
+
+
+def test_speedyapply_accepts_identifiable_empty_six_column_table():
+    table = "| Company | Position | Location | Salary | Apply | Age |\n| --- | --- | --- | --- | --- | --- |"
+    source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=table))))
+
+    result = source.fetch(JobQuery())
+
+    assert result.jobs == []
+    assert result.warnings == []
+
+
 def test_listing_rejects_missing_title_and_unsafe_url():
     with pytest.raises(ValueError):
         JobListing("test", "1", "", "Acme", "Remote", "internship", "javascript:alert(1)", "", None, "2026-10-09")

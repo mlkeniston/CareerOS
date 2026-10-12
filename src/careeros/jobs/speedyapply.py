@@ -71,6 +71,20 @@ def _http_url(value: str | None) -> bool:
         return False
 
 
+def _has_empty_table(markdown: str) -> bool:
+    lines = markdown[:MAX_INPUT].splitlines()[:MAX_ROWS]
+    for header, separator in zip(lines, lines[1:]):
+        columns = _split_row(header.strip())
+        rules = _split_row(separator.strip())
+        if (
+            len(columns) == len(rules) == 6
+            and [cell.casefold() for cell in columns] == ["company", "position", "location", "salary", "apply", "age"]
+            and all(re.fullmatch(r":?-{3,}:?", cell) for cell in rules)
+        ):
+            return True
+    return False
+
+
 class SpeedyApplySource:
     name = "speedyapply"
 
@@ -139,17 +153,17 @@ class SpeedyApplySource:
                 response = self.client.get(raw_url)
                 response.raise_for_status()
                 parsed, parse_warnings = self.parse_markdown(response.text, source_url)
+                if not parsed and not _has_empty_table(response.text):
+                    raise ValueError("SpeedyApply file has no expected table")
             except (httpx.HTTPError, ValueError):
                 warnings.append(f"{filename}: feed unavailable or malformed")
                 continue
             successes += 1
             warnings.extend(f"{filename}: {warning}" for warning in parse_warnings)
             for job in parsed:
-                if job.external_id not in seen and matches_query(job, query):
+                if len(jobs) < query.limit and job.external_id not in seen and matches_query(job, query):
                     seen.add(job.external_id)
                     jobs.append(job)
-                    if len(jobs) >= query.limit:
-                        break
         if successes == 0:
             raise ValueError("SpeedyApply files unavailable or malformed")
         return SourceResult(jobs, warnings[:MAX_WARNINGS])
