@@ -47,6 +47,7 @@ def get_workspace(request: Request):
         approved_applications = conn.execute("SELECT COUNT(*) FROM applications WHERE status='approved'").fetchone()[0]
         applied_proposals = conn.execute("SELECT COUNT(*) FROM portfolio_proposals WHERE status='applied'").fetchone()[0]
         provider_row = conn.execute("SELECT value FROM settings WHERE key='planner_provider'").fetchone()
+        handoff_cursor = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM workflow_handoffs").fetchone()[0])
 
     selected_provider = provider_row[0] if provider_row else request.app.state.settings.planner_provider
     if selected_provider == "openai" and not request.app.state.settings.openai_api_key:
@@ -88,6 +89,7 @@ def get_workspace(request: Request):
 
     activity = [_activity(task) for task in tasks[:10]]
     return {
+        "handoff_cursor": handoff_cursor,
         "autopilot": {
             "enabled": state["enabled"],
             "last_discovery_queued_at": last,

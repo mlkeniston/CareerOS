@@ -16,8 +16,38 @@ import {
   findStationAt,
 } from "./office-layout.js";
 
+const HANDOFF_KINDS = Object.freeze({
+  "draft-submitted": "document",
+  "critique-returned": "document",
+  "project-submitted": "project",
+  "project-defect-returned": "ticket",
+  "project-qa-passed": "green-pass",
+});
+
+export class HandoffCursor {
+  constructor(renderer) {
+    this.renderer = renderer;
+    this.afterId = null;
+  }
+
+  initialize(snapshot) {
+    if (this.afterId === null && Number.isSafeInteger(snapshot?.handoff_cursor) && snapshot.handoff_cursor >= 0) {
+      this.afterId = snapshot.handoff_cursor;
+    }
+  }
+
+  receive(batch) {
+    if (this.afterId === null) return;
+    const events = Array.isArray(batch?.events)
+      ? batch.events.filter(event => Number.isSafeInteger(event.id) && event.id > this.afterId)
+      : [];
+    if (events.length) this.renderer.playHandoffs(events);
+    if (Number.isSafeInteger(batch?.latest_id)) this.afterId = Math.max(this.afterId, batch.latest_id);
+  }
+}
+
 export class OfficeRenderer {
-  constructor(canvas, { onSelect = () => {}, onHover = () => {}, onViewChange = () => {} } = {}) {
+  constructor(canvas, { onSelect = () => {}, onHover = () => {}, onViewChange = () => {}, now = () => performance.now() } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d", { alpha: false });
     if (!this.ctx) throw new Error("The office canvas is not available in this browser.");
@@ -36,6 +66,8 @@ export class OfficeRenderer {
     this.active = true;
     this.destroyed = false;
     this.lastFrameAt = 0;
+    this.now = now;
+    this.handoffs = [];
     this.motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
     this.reducedMotion = this.motionPreference.matches;
     this.handleResize = () => this.resize();
@@ -92,6 +124,40 @@ export class OfficeRenderer {
     }
     if (this.reducedMotion) this.snapActorsToTargets();
     this.draw(0);
+  }
+
+  playHandoffs(events) {
+    if (!Array.isArray(events) || this.destroyed) return;
+    const startedAt = this.now();
+    for (const event of events) {
+      const kind = HANDOFF_KINDS[event?.event_type];
+      if (!kind) continue;
+      const from = this.handoffPosition(event.from_worker, event.from_station_id);
+      const to = this.handoffPosition(event.to_worker, event.to_station_id);
+      if (!from || !to) continue;
+      this.handoffs.push({ id: event.id, kind, from, to, startedAt });
+    }
+    this.draw(startedAt);
+  }
+
+  handoffPosition(workerId, stationId) {
+    const station = STATIONS.find(item => item.workerStationId === stationId)
+      || STATIONS.find(item => item.workerStationId === WORKER_APPEARANCE[workerId]?.stationId);
+    return station?.workerCell || this.actors.get(workerId) || WORKER_APPEARANCE[workerId]?.waitCell || null;
+  }
+
+  activeHandoffTokens(timestamp) {
+    const now = timestamp || this.now();
+    this.handoffs = this.handoffs.filter(item => now - item.startedAt < 2000);
+    return this.handoffs.map(item => {
+      const phase = this.reducedMotion ? 1 : Math.max(0, Math.min(1, (now - item.startedAt) / 700));
+      return {
+        id: item.id,
+        kind: item.kind,
+        col: item.from.col + (item.to.col - item.from.col) * phase,
+        row: item.from.row + (item.to.row - item.from.row) * phase,
+      };
+    });
   }
 
   setSelection(selection) {
@@ -530,11 +596,17 @@ export class OfficeRenderer {
         value: parcel,
         depth: this.project(parcel.col, parcel.row).y + 1,
       })),
+      ...this.activeHandoffTokens(timestamp).map(token => ({
+        type: "handoff",
+        value: token,
+        depth: this.project(token.col, token.row).y + 2,
+      })),
     ].sort((a, b) => a.depth - b.depth);
     for (const item of objects) {
       if (item.type === "prop") this.drawProp(item.value);
       else if (item.type === "station") this.drawStation(item.value, timestamp);
       else if (item.type === "parcel") this.drawParcel(item.value);
+      else if (item.type === "handoff") this.drawHandoffToken(item.value);
       else this.drawActor(item.value, timestamp);
     }
   }
@@ -605,6 +677,34 @@ export class OfficeRenderer {
     this.ctx.fillRect(x - 3 * scale, y, 6 * scale, 1.2 * scale);
     this.ctx.fillStyle = parcel.color;
     this.ctx.fillRect(x - 2 * scale, y + 2 * scale, 4 * scale, 2 * scale);
+  }
+
+  drawHandoffToken(token) {
+    const point = this.project(token.col, token.row);
+    const scale = this.project.scale;
+    const x = Math.round(point.x);
+    const y = Math.round(point.y - 8 * scale);
+    const color = {
+      document: PALETTE.cyan,
+      project: PALETTE.purple,
+      ticket: PALETTE.amber,
+      "green-pass": PALETTE.green,
+    }[token.kind];
+    drawPixelShadow(this.ctx, x, y + 9 * scale, 10 * scale, 2 * scale);
+    this.ctx.fillStyle = "#101a1d";
+    this.ctx.fillRect(x - 4 * scale, y - 2 * scale, 8 * scale, 8 * scale);
+    this.ctx.fillStyle = color;
+    this.ctx.fillRect(x - 3 * scale, y - 1 * scale, 6 * scale, 6 * scale);
+    this.ctx.fillStyle = "#f2fbeb";
+    if (token.kind === "document" || token.kind === "ticket") {
+      this.ctx.fillRect(x - 2 * scale, y + 1 * scale, 4 * scale, scale);
+      this.ctx.fillRect(x - 2 * scale, y + 3 * scale, 3 * scale, scale);
+    } else if (token.kind === "project") {
+      this.ctx.fillRect(x - 2 * scale, y + 1 * scale, 4 * scale, 3 * scale);
+    } else {
+      this.ctx.fillRect(x - 2 * scale, y + 2 * scale, 2 * scale, scale);
+      this.ctx.fillRect(x, y + scale, 2 * scale, scale);
+    }
   }
 
   drawStation(station, timestamp) {

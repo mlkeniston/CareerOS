@@ -1,7 +1,85 @@
 import json
 
+import pytest
+
 from careeros.jobs.models import JobListing
 from careeros.portfolio.service import PortfolioBrief
+from careeros.workflows.repository import WorkflowRepository
+
+
+@pytest.fixture
+def workflow_repository(db):
+    return WorkflowRepository(db)
+
+
+@pytest.fixture
+def running_task(queue):
+    task_id = queue.enqueue("application", {}, "ollama")
+    assert queue.claim_next({"application"}).id == task_id
+    return task_id
+
+
+def add_test_handoff(repo, task, idempotency_key, **changes):
+    event = {
+        "idempotency_key": idempotency_key,
+        "task_id": task,
+        "object_type": "application",
+        "object_id": "application-1",
+        "from_worker": "application-prep",
+        "to_worker": "resume-analyst",
+        "event_type": "draft-submitted",
+        "payload": {"from_station_id": "application-team-01", "to_station_id": "resume-team-01", "item_type": "document"},
+    }
+    event.update(changes)
+    with repo.db.connect() as conn:
+        return repo.record(conn, **event)
+
+
+def test_handoff_endpoint_uses_exclusive_cursor(client, workflow_repository, running_task):
+    add_test_handoff(workflow_repository, running_task, idempotency_key="first")
+    add_test_handoff(workflow_repository, running_task, idempotency_key="second")
+    response = client.get("/api/workspace/handoffs?after_id=1")
+    assert response.status_code == 200
+    assert [event["id"] for event in response.json()["events"]] == [2]
+    assert response.json()["latest_id"] == 2
+
+
+def test_handoff_endpoint_keeps_high_water_mark_and_filters_private_payload(client, workflow_repository, running_task):
+    add_test_handoff(
+        workflow_repository, running_task, idempotency_key="private",
+        payload={
+            "from_station_id": "application-team-01", "to_station_id": "resume-team-01",
+            "item_type": "document", "resume": "PRIVATE RESUME", "model_prompt": "PRIVATE PROMPT",
+            "employer_page": "PRIVATE EMPLOYER PAGE", "profile": "PRIVATE PROFILE",
+        },
+    )
+    snapshot = client.get("/api/workspace").json()
+    assert snapshot["handoff_cursor"] == 1
+    response = client.get("/api/workspace/handoffs?after_id=0")
+    assert response.status_code == 200
+    event = response.json()["events"][0]
+    assert event["from_station_id"] == "application-team-01"
+    assert event["to_station_id"] == "resume-team-01"
+    assert event["item_type"] == "document"
+    assert event["payload"] == {
+        "from_station_id": "application-team-01", "to_station_id": "resume-team-01", "item_type": "document",
+    }
+    assert "PRIVATE" not in response.text
+    empty = client.get("/api/workspace/handoffs?after_id=1").json()
+    assert empty == {"events": [], "latest_id": 1}
+
+
+@pytest.mark.parametrize("query", ["after_id=-1", "limit=0", "limit=101"])
+def test_handoff_endpoint_rejects_invalid_cursor_or_limit(client, query):
+    assert client.get(f"/api/workspace/handoffs?{query}").status_code == 422
+
+
+def test_handoff_endpoint_applies_limit_in_id_order(client, workflow_repository, running_task):
+    for key in ("first", "second", "third"):
+        add_test_handoff(workflow_repository, running_task, idempotency_key=key)
+    result = client.get("/api/workspace/handoffs?after_id=0&limit=2").json()
+    assert [event["id"] for event in result["events"]] == [1, 2]
+    assert result["latest_id"] == 3
 
 
 def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkeypatch):

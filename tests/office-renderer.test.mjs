@@ -6,7 +6,7 @@ const layoutSource = await readFile(new URL("../src/careeros/static/office-layou
 const rendererSource = await readFile(new URL("../src/careeros/static/office-renderer.js", import.meta.url), "utf8");
 const layoutUrl = `data:text/javascript;base64,${Buffer.from(layoutSource).toString("base64")}`;
 const rendererModule = rendererSource.replace('from "./office-layout.js"', `from "${layoutUrl}"`);
-const { OfficeRenderer } = await import(`data:text/javascript;base64,${Buffer.from(rendererModule).toString("base64")}`);
+const { OfficeRenderer, HandoffCursor } = await import(`data:text/javascript;base64,${Buffer.from(rendererModule).toString("base64")}`);
 const { CONVEYOR_NETWORK, FLOOR_CELLS, PALETTE, STATIONS, WORKER_APPEARANCE, WORKER_DISPLAY_SCALE } = await import(layoutUrl);
 
 function canvasHarness() {
@@ -228,4 +228,77 @@ test("renderer cancels animation while inactive and resumes it on return", () =>
     renderer.destroy();
     assert.equal(frames.size, 0, "destroy should cancel the resumed animation frame");
   });
+});
+
+const handoff = (id, eventType, fromWorker = "application-prep", toWorker = "resume-analyst") => ({
+  id, event_type: eventType, from_worker: fromWorker, to_worker: toWorker,
+  from_station_id: "application-team-01", to_station_id: "resume-team-01", item_type: "document",
+});
+
+test("renderer queues recognized handoffs and ignores unknown event types", () => {
+  withAnimationFrames(() => {
+    const { canvas, rectCalls } = canvasHarness();
+    const renderer = new OfficeRenderer(canvas, { now: () => 1000 });
+    renderer.update({
+      workers: [{ id: "application-prep", station_id: "application-team-01", status: "working", color: "amber" }],
+      counts: {},
+    });
+    assert.equal(renderer.handoffs.length, 0, "worker status alone must not create a handoff");
+    const greenPixelsBefore = rectCalls.filter(call => call.style === PALETTE.green).length;
+    renderer.playHandoffs([
+      handoff(1, "draft-submitted"), handoff(2, "critique-returned"),
+      handoff(3, "project-submitted"), handoff(4, "project-defect-returned"),
+      handoff(5, "project-qa-passed"), handoff(6, "unrecognized"),
+    ]);
+    assert.deepEqual(renderer.handoffs.map(item => item.kind), ["document", "document", "project", "ticket", "green-pass"]);
+    assert.ok(rectCalls.filter(call => call.style === PALETTE.green).length > greenPixelsBefore,
+      "the green pass should be painted in the office");
+    renderer.destroy();
+  });
+});
+
+test("handoff tokens travel between workers for 700 ms and expire after 2 seconds", () => {
+  withAnimationFrames(() => {
+    const { canvas } = canvasHarness();
+    const renderer = new OfficeRenderer(canvas, { now: () => 1000 });
+    renderer.playHandoffs([handoff(1, "draft-submitted")]);
+    const start = renderer.activeHandoffTokens(1000)[0];
+    const middle = renderer.activeHandoffTokens(1350)[0];
+    const end = renderer.activeHandoffTokens(1700)[0];
+    assert.deepEqual({ col: start.col, row: start.row }, { col: 4, row: 8 });
+    assert.deepEqual({ col: end.col, row: end.row }, { col: 9, row: 2 });
+    assert.ok(middle.col > Math.min(start.col, end.col) && middle.col < Math.max(start.col, end.col));
+    assert.ok(middle.row > Math.min(start.row, end.row) && middle.row < Math.max(start.row, end.row));
+    assert.deepEqual(renderer.activeHandoffTokens(3001), []);
+    renderer.destroy();
+  });
+});
+
+test("reduced motion shows the settled handoff without travel", () => {
+  withReducedMotion(() => {
+    const { canvas } = canvasHarness();
+    const renderer = new OfficeRenderer(canvas, { now: () => 1000 });
+    renderer.playHandoffs([handoff(1, "project-qa-passed")]);
+    const atStart = renderer.activeHandoffTokens(1000)[0];
+    const later = renderer.activeHandoffTokens(1500)[0];
+    assert.deepEqual({ col: atStart.col, row: atStart.row }, { col: later.col, row: later.row });
+    assert.equal(atStart.kind, "green-pass");
+    renderer.destroy();
+  });
+});
+
+test("initial snapshot cursor suppresses old events and consecutive polls do not replay IDs", () => {
+  const played = [];
+  const cursor = new HandoffCursor({ playHandoffs(events) { played.push(...events); } });
+  cursor.initialize({ handoff_cursor: 4 });
+  assert.equal(cursor.afterId, 4);
+  cursor.receive({ events: [handoff(5, "draft-submitted")], latest_id: 5 });
+  cursor.initialize({ handoff_cursor: 99 });
+  assert.equal(cursor.afterId, 5, "later snapshots must not skip events between polls");
+  cursor.receive({ events: [handoff(5, "draft-submitted"), handoff(6, "critique-returned")], latest_id: 6 });
+  assert.deepEqual(played.map(event => event.id), [5, 6]);
+  const reloaded = new HandoffCursor({ playHandoffs(events) { played.push(...events); } });
+  reloaded.initialize({ handoff_cursor: 6 });
+  assert.equal(reloaded.afterId, 6);
+  assert.deepEqual(played.map(event => event.id), [5, 6], "reload must not enqueue the earlier events");
 });

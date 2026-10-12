@@ -1,4 +1,4 @@
-import { OfficeRenderer } from "./office-renderer.js?v=neon-office-fullbleed-20261011";
+import { HandoffCursor, OfficeRenderer } from "./office-renderer.js?v=neon-office-fullbleed-20261011";
 
 const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, activeOutreach: null, office: null, officeSelection: null };
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -11,6 +11,7 @@ const officeRenderer = new OfficeRenderer($("#office-canvas"), {
     if (angle) angle.textContent = `${String(Math.round(degrees) % 360).padStart(3, "0")}°`;
   },
 });
+const handoffCursor = new HandoffCursor(officeRenderer);
 officeRenderer.update({ workers: [], counts: {} });
 $("#office-reset-view").addEventListener("click", () => officeRenderer.setRotation(0));
 let officePollTimer = null;
@@ -219,6 +220,11 @@ async function refreshOffice() {
       officeRenderer.setSelection(null);
     }
     officeRenderer.update(snapshot);
+    handoffCursor.initialize(snapshot);
+    if (handoffCursor.afterId !== null) {
+      const handoffs = await api(`/api/workspace/handoffs?after_id=${handoffCursor.afterId}&limit=100`);
+      handoffCursor.receive(handoffs);
+    }
     $("#office-connection").textContent = "LIVE";
     $("#office-connection").dataset.state = "live";
     renderWorkerRoster(snapshot.workers || []);
