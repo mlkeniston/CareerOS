@@ -637,3 +637,23 @@ body.office-active .inspector-close { border-color: transparent; }
     backdrop-filter: blur(7px);
   }
 }
+
+/* Application station shares the office inspector palette and local pixel type. */
+.application-station-layout { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.6fr); gap: 18px; align-items: start; }
+.application-review { background: rgba(27, 14, 44, .86); min-width: 0; }
+.application-review p, .application-review pre { max-width: 76ch; }
+.application-review details { border-top: 1px solid rgba(197,183,216,.16); padding: 12px 0; }
+.application-review summary { cursor: pointer; color: #4ef3ff; }
+.application-review pre { font: 18px/1.3 var(--pixel-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.application-review .review-grid { margin-top: 18px; }
+.application-review .review-status { color: #c5b7d8; }
+.application-review .review-status.cleared, .state-label.approved { color: #c4ff6b; }
+.application-review .review-status.held, .state-label.quality_hold { color: #ffd166; }
+.state-label.manager_review { color: #ff4fc3; }
+.application-review .review-actions { flex-wrap: wrap; gap: 10px; }
+.application-review input, .application-review textarea { width: 100%; background: #100820; color: #c5b7d8; border: 1px solid rgba(197,183,216,.35); padding: 9px; font: 18px/1.3 var(--pixel-body); }
+.application-review input[type=checkbox] { width: auto; }
+.application-review label { display: block; margin: 8px 0; }
+@media (max-width: 900px) { .application-station-layout { grid-template-columns: 1fr; } }
+
+.application-review > h2 { font: 12px/1.7 var(--pixel-display); }

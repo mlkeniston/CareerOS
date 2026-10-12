@@ -127,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_sources.append(LeverSource(feed_client, list(settings.lever_sites)))
     app.state.job_sources = job_sources
     employer_verifier = EmployerPostingVerifier()
+    application_service.posting_verifier = employer_verifier
     job_discovery_service = JobDiscoveryService(
         job_repository,
         job_sources,

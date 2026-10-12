@@ -53,6 +53,15 @@ def app(tmp_path):
         resolver=lambda host, port: ["93.184.216.34"],
     )
     application.state.job_discovery_service.verifier = verifier
+    class OfflinePostingVerifier:
+        def verify(self, url, company, title):
+            from careeros.jobs.verification import VerificationResult
+            with application.state.db.connect() as conn:
+                row = conn.execute('SELECT v.* FROM job_verifications v JOIN jobs j ON j.id=v.job_id WHERE j.company=? AND j.title=? AND v.final_url=?', (company, title, url)).fetchone()
+            if row:
+                return VerificationResult(**{k: row[k] for k in ('status', 'reason', 'final_url', 'checked_at', 'text', 'fingerprint')})
+            return VerificationResult('held', 'Offline missing posting', url, 'fixture-check')
+    application.state.application_service.posting_verifier = OfflinePostingVerifier()
     yield application
     verifier.close()
 

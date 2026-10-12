@@ -18,7 +18,7 @@ import {
 
 const HANDOFF_KINDS = Object.freeze({
   "draft-submitted": "document",
-  "critique-returned": "document",
+  "critique-returned": "ticket",
   "project-submitted": "project",
   "project-defect-returned": "ticket",
   "project-qa-passed": "green-pass",
@@ -71,6 +71,7 @@ export class OfficeRenderer {
     this.lastFrameAt = 0;
     this.now = now;
     this.handoffs = [];
+    this.seenHandoffIds = new Set();
     this.motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
     this.reducedMotion = this.motionPreference.matches;
     this.handleResize = () => this.resize();
@@ -134,17 +135,53 @@ export class OfficeRenderer {
     const startedAt = this.now();
     for (const event of events) {
       const kind = HANDOFF_KINDS[event?.event_type];
-      if (!kind) continue;
+      if (!kind || !Number.isSafeInteger(event.id) || this.seenHandoffIds.has(event.id)) continue;
       const from = this.handoffPosition(event.from_worker, event.from_station_id);
       const to = this.handoffPosition(event.to_worker, event.to_station_id);
       if (!from || !to) continue;
-      this.handoffs.push({ id: event.id, kind, from, to, startedAt });
+      this.seenHandoffIds.add(event.id);
+      const actors = [this.handoffActor(event.from_worker, event.from_station_id), this.handoffActor(event.to_worker, event.to_station_id)].filter(Boolean);
+      const begins = Math.max(startedAt, ...actors.flatMap(actor => (actor.interactions || []).map(interaction => interaction.startedAt + 2000)));
+      const interaction = { id: event.id, from, to, startedAt: begins };
+      actors.forEach(actor => {
+        actor.interactions ||= [];
+        actor.interactions.push({...interaction, home: {col: actor.targetCol, row: actor.targetRow},
+          partner: actor === actors[0] ? to : from});
+      });
+      this.handoffs.push({ ...interaction, kind });
     }
     this.draw(startedAt);
   }
 
+  handoffActor(workerId, stationId) {
+    return [...this.actors.values()].find(actor => actor.id === workerId || actor.stationId === (stationId || workerId));
+  }
+
+  updateInteractions(timestamp) {
+    const clock = timestamp || this.now();
+    for (const actor of this.actors.values()) {
+      actor.interactions = (actor.interactions || []).filter(interaction => clock - interaction.startedAt < 2000);
+      const interaction = actor.interactions.find(item => item.startedAt <= clock);
+      if (!interaction || this.reducedMotion) {
+        actor.col = actor.targetCol;
+        actor.row = actor.targetRow;
+        actor.facing = 'front';
+        continue;
+      }
+      const age = clock - interaction.startedAt;
+      const approach = age < 450 ? age / 450 : age < 850 ? 1 : Math.max(0, 1 - (age - 850) / 450);
+      const meeting = {col: (interaction.from.col + interaction.to.col) / 2,
+                       row: (interaction.from.row + interaction.to.row) / 2};
+      // Leave a small gap so both characters remain visible during the exchange.
+      const side = interaction.home.col < interaction.partner.col ? -0.35 : 0.35;
+      actor.col = interaction.home.col + (meeting.col + side - interaction.home.col) * approach;
+      actor.row = interaction.home.row + (meeting.row - interaction.home.row) * approach;
+      actor.facing = approach > 0 ? (this.project(interaction.partner.col, interaction.partner.row).x >= this.project(interaction.home.col, interaction.home.row).x ? 'right' : 'left') : 'front';
+    }
+  }
+
   handoffPosition(workerId, stationId) {
-    const station = STATIONS.find(item => item.workerStationId === stationId)
+    const station = STATIONS.find(item => item.workerStationId === (stationId || workerId))
       || STATIONS.find(item => item.workerStationId === WORKER_APPEARANCE[workerId]?.stationId);
     return station?.workerCell || this.actors.get(workerId) || WORKER_APPEARANCE[workerId]?.waitCell || null;
   }
@@ -152,8 +189,9 @@ export class OfficeRenderer {
   activeHandoffTokens(timestamp) {
     const now = timestamp || this.now();
     this.handoffs = this.handoffs.filter(item => now - item.startedAt < 2000);
-    return this.handoffs.map(item => {
-      const phase = this.reducedMotion ? 1 : Math.max(0, Math.min(1, (now - item.startedAt) / 700));
+    return this.handoffs.filter(item => item.startedAt <= now).map(item => {
+      const age = now - item.startedAt;
+      const phase = this.reducedMotion ? 1 : age < 450 ? Math.max(0, age / 900) : age < 850 ? 0.5 : Math.min(1, 0.5 + (age - 850) / 900);
       return {
         id: item.id,
         kind: item.kind,
@@ -263,7 +301,7 @@ export class OfficeRenderer {
     if (!appearance) return;
     const station = STATIONS.find(item => item.workerStationId === worker.station_id)
       || STATIONS.find(item => item.workerStationId === appearance.stationId);
-    const isAtStation = ["working", "needs_review", "failed", "interrupted"].includes(worker.status);
+    const isAtStation = ["working", "needs_review", "manager_review", "quality_hold", "approved", "failed", "interrupted"].includes(worker.status);
     const targetCell = isAtStation ? station?.workerCell : appearance.waitCell;
     let actor = this.actors.get(worker.id);
     if (!actor) {
@@ -277,6 +315,10 @@ export class OfficeRenderer {
     actor.stationId = worker.station_id || appearance.stationId;
     actor.targetCol = targetCell?.col ?? appearance.waitCell.col;
     actor.targetRow = targetCell?.row ?? appearance.waitCell.row;
+    if (!(actor.interactions || []).some(interaction => this.now() < interaction.startedAt + 2000)) {
+      actor.col = actor.targetCol;
+      actor.row = actor.targetRow;
+    }
   }
 
   snapActorsToTargets() {
@@ -302,21 +344,8 @@ export class OfficeRenderer {
     this.frameId = window.requestAnimationFrame(frame);
   }
 
-  advanceActors(elapsed) {
-    if (!elapsed) return;
-    const distance = 3.2 * (elapsed / 1000);
-    for (const actor of this.actors.values()) {
-      const dx = actor.targetCol - actor.col;
-      const dy = actor.targetRow - actor.row;
-      const remaining = Math.hypot(dx, dy);
-      if (remaining <= distance || remaining === 0) {
-        actor.col = actor.targetCol;
-        actor.row = actor.targetRow;
-      } else {
-        actor.col += (dx / remaining) * distance;
-        actor.row += (dy / remaining) * distance;
-      }
-    }
+  advanceActors() {
+    this.updateInteractions(this.now());
   }
 
   draw(timestamp) {
@@ -590,6 +619,7 @@ export class OfficeRenderer {
   }
 
   drawWorldObjects(timestamp) {
+    this.updateInteractions(timestamp);
     const objects = [
       ...PROPS.map(prop => ({ type: "prop", value: prop, depth: this.project(prop.col, prop.row).y })),
       ...STATIONS.map(station => ({ type: "station", value: station, depth: this.project(station.cell.col, station.cell.row).y + 4 })),
@@ -614,32 +644,15 @@ export class OfficeRenderer {
     }
   }
 
-  activeConveyorParcels(timestamp) {
-    return (this.snapshot?.workers || []).flatMap(worker => {
-      if (worker.status !== "working" || !worker.task_id) return [];
-      const source = STATIONS.find(item => item.workerStationId === worker.station_id);
-      if (!source) return [];
-      const lane = CONVEYOR_NETWORK.find(item => item.stationIds.includes(source.trackId));
-      if (!lane) return [];
-      const sourceIndex = lane.stationIds.indexOf(source.trackId);
-      const destination = STATIONS.find(item => item.trackId === lane.stationIds[sourceIndex + 1]);
-      if (!destination) return [];
-
-      const phase = taskPhase(worker.task_id, timestamp, 3200);
-      const rowOffset = 0.78;
-      return [{
-        col: source.cell.col + (destination.cell.col - source.cell.col) * phase,
-        row: source.cell.row + rowOffset
-          + ((destination.cell.row + rowOffset) - (source.cell.row + rowOffset)) * phase,
-        color: PALETTE[worker.color] || PALETTE[WORKER_APPEARANCE[worker.id]?.color] || PALETTE.cyan,
-      }];
-    });
+  activeConveyorParcels() {
+    // Work status is not evidence that an item moved. Persisted handoffs drive travel.
+    return [];
   }
 
   drawConveyorNetwork(timestamp) {
     const ctx = this.ctx;
     const scale = this.project.scale;
-    const rollerPhase = this.reducedMotion ? 0 : (timestamp * 0.003) % (7 * scale);
+    const rollerPhase = 0;
     for (const lane of CONVEYOR_NETWORK) {
       for (let index = 0; index < lane.waypoints.length - 1; index += 1) {
         const start = this.project(lane.waypoints[index].col, lane.waypoints[index].row);
@@ -720,7 +733,7 @@ export class OfficeRenderer {
       : null;
     const working = worker?.status === "working";
     const selected = this.selection?.type === "station" && this.selection.id === station.selectionId;
-    const signal = working && Math.floor(timestamp / 450) % 2 === 0 ? PALETTE.green : accent;
+    const signal = working ? PALETTE.green : accent;
 
     drawPixelShadow(ctx, x, y + 4, 16, 4);
     this.drawGroundPrism(station.cell.col, station.cell.row + 0.28, 25, 12, 6, "#817a60", "#4b4a3e", "#383a33");
@@ -868,7 +881,7 @@ export class OfficeRenderer {
 
   drawActor(actor, timestamp) {
     const appearance = WORKER_APPEARANCE[actor.id];
-    const sprite = appearance.sprite;
+    const sprite = actor.facing === "left" ? appearance.sprite.map(row => [...row].reverse().join("")) : appearance.sprite;
     const pixelScale = this.project.scale * WORKER_DISPLAY_SCALE / 2;
     const width = sprite[0].length;
     const height = sprite.length;
@@ -881,7 +894,7 @@ export class OfficeRenderer {
     actor.bounds = { x, y, width: screenWidth, height: screenHeight };
     const moving = Math.hypot(actor.targetCol - actor.col, actor.targetRow - actor.row) > 0.03;
     const working = actor.status === "working";
-    const step = Math.floor(timestamp / 170) % 2;
+    const step = 0;
     drawPixelShadow(this.ctx, point.x, point.y + 1, 12 * pixelScale, 3 * pixelScale);
     this.ctx.save();
     this.ctx.translate(x, y);
@@ -897,13 +910,14 @@ export class OfficeRenderer {
         if (symbol === "a") color = lighten(actor.color, 26);
         if (moving && symbol === "K" && (column + step) % 2 === 0) continue;
         this.ctx.fillStyle = color;
-        this.ctx.fillRect(column, row, 1, 1);
+        const gaze = symbol === "E" && actor.facing !== "front" ? (actor.facing === "left" ? -1 : 1) : 0;
+        this.ctx.fillRect(column + gaze, row, 1, 1);
       }
     }
     this.ctx.scale(2, 2);
     this.drawWorkerGear(appearance.gear, 0, 0, designWidth, timestamp);
     if (working) {
-      const blink = Math.floor(timestamp / 400) % 2 === 0;
+      const blink = true;
       this.ctx.fillStyle = blink ? PALETTE.green : PALETTE.amber;
       this.ctx.fillRect(designWidth - 3, 21 + step, 3, 2);
       this.ctx.fillStyle = blink ? PALETTE.green : PALETTE.light;
@@ -950,7 +964,7 @@ export class OfficeRenderer {
       ctx.fillStyle = PALETTE.amber;
       ctx.fillRect(x + 7, y + 1, 10, 2);
       ctx.fillRect(x + 5, y + 3, 14, 2);
-      ctx.fillStyle = Math.floor(timestamp / 600) % 2 ? PALETTE.amber : PALETTE.green;
+      ctx.fillStyle = PALETTE.green;
       ctx.fillRect(x + 10, y + 4, 3, 1);
     }
   }
@@ -1088,11 +1102,6 @@ function drawPixelShadow(ctx, x, y, width, depth) {
   }
 }
 
-function taskPhase(taskId, timestamp, duration) {
-  let hash = 0;
-  for (const character of String(taskId)) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-  return ((Math.max(0, timestamp) + hash % duration) % duration) / duration;
-}
 
 function lighten(hex, amount) {
   const value = Number.parseInt(hex.slice(1), 16);

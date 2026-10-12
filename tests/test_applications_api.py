@@ -158,3 +158,46 @@ def test_manual_edit_rejects_line_wrap_qualifier_bypass(client):
     after = client.get(route).json()
     assert after['draft'] == before['draft']
     assert after['draft_version'] == before['draft_version']
+
+
+def test_reject_queues_one_local_revision_with_reason(client):
+    started = client.post('/api/applications', json=application_inputs(client)).json()
+    client.app.state.worker.run_once()
+    client.app.state.worker.run_once()
+    route = f"/api/applications/{started['id']}"
+    response = client.post(route + '/reject', json={'reason': 'Lead with the Python API'})
+    assert response.status_code == 200
+    assert client.get(route).json()['rejection_reason'] == 'Lead with the Python API'
+    revisions = [t for t in client.app.state.queue.list() if t.kind == 'application_revision']
+    assert len(revisions) == 1
+    assert revisions[0].provider == 'ollama'
+    assert revisions[0].cloud_confirmed is False
+    assert client.post(route + '/reject', json={}).status_code == 409
+    assert client.post(route + '/approve').status_code == 409
+    client.app.state.worker.run_once()
+    assert 'Lead with the Python API' in client.app.state.fake_planner.calls[-1].task
+    client.app.state.worker.run_once()
+    assert client.get(route).json()['status'] == 'needs_review'
+
+
+def test_reject_respects_lifetime_review_limit(client):
+    started = client.post('/api/applications', json=application_inputs(client)).json()
+    client.app.state.worker.run_once()
+    client.app.state.worker.run_once()
+    with client.app.state.db.connect() as conn:
+        conn.execute('UPDATE applications SET manager_cycle=3 WHERE id=?', (started['id'],))
+    assert client.post(f"/api/applications/{started['id']}/reject", json={}).status_code == 409
+    assert not any(t.kind == 'application_revision' for t in client.app.state.queue.list())
+
+
+def test_new_fact_needs_explicit_attestation_and_new_snapshot(client):
+    started = client.post('/api/applications', json=application_inputs(client)).json()
+    route = f"/api/applications/{started['id']}"
+    before = client.get(route).json()['snapshot']
+    payload = {'name': 'additional experience', 'value': 'Built a Java API'}
+    assert client.post(route + '/evidence', json=payload).status_code == 409
+    response = client.post(route + '/evidence', json={**payload, 'confirm_accurate': True})
+    assert response.status_code == 200
+    assert client.get('/api/profile').json()['eligibility_facts']['additional experience'] == 'Built a Java API'
+    assert client.get(route).json()['snapshot'] == before
+    assert response.json()['requires_new_application'] is True

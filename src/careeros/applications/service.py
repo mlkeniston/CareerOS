@@ -3,6 +3,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
 import sqlite3
 import uuid
 from dataclasses import asdict, dataclass
@@ -46,6 +50,7 @@ class Application:
     manager_cycle: int = 0
     manager_task_id: str | None = None
     hold_reason: str | None = None
+    rejection_reason: str | None = None
 
 
 class ApplicationService:
@@ -53,6 +58,7 @@ class ApplicationService:
         self.db, self.queue, self.gateway = db, queue, gateway
         self.jobs, self.profiles, self.resumes = jobs, profiles, resumes
         self.hiring_manager = None
+        self.posting_verifier = None
 
     def preview(self, job_id: str, resume_id: str) -> tuple[dict, str]:
         snapshot = self._snapshot(job_id, resume_id)
@@ -154,6 +160,8 @@ class ApplicationService:
             executing_model = self._model(task.provider)
             if revision:
                 context = self._revision_context(application, task.provider, task.payload.get('findings', []))
+                if task.payload.get('rejection_reason') is not None:
+                    context['user_revision_reason'] = task.payload['rejection_reason']
                 executing_model = context['selected_model']
                 if task.provider == 'openai':
                     token = task.payload.get('revision_preview_token')
@@ -250,16 +258,124 @@ class ApplicationService:
         if not application:
             raise LookupError('Application not found')
         self.require_manager_clearance(application)
-        if application.status == 'approved':
-            return application
-        if application.status != 'needs_review' or application.draft is None or application.snapshot is None:
+        self.reverify_posting(application)
+        if application.status not in {'needs_review', 'approved'} or application.draft is None or application.snapshot is None:
             raise RuntimeError('Only a complete draft can be approved')
         self._validate(ApplicationDraft.parse(application.draft), application.snapshot)
+        if application.status == 'approved':
+            return application
         with self.db.connect() as conn:
-            changed = conn.execute("UPDATE applications SET status='approved',updated_at=? WHERE id=? AND status='needs_review' AND draft_version=? AND clearance_stale=0",
-                                   (now(), application_id, application.draft_version)).rowcount
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                self.require_current_posting(application)
+            except ApplicationPostingChanged as exc:
+                self.hold_changed_posting(conn, application, str(exc))
+                conn.commit()
+                raise RuntimeError('Application is on quality hold: ' + str(exc)) from exc
+            changed = conn.execute("UPDATE applications SET status='approved',updated_at=? WHERE id=? AND status='needs_review' AND draft_version=? AND clearance_stale=0 AND manager_cycle=? AND draft_json=?",
+                                   (now(), application_id, application.draft_version, application.manager_cycle, json.dumps(application.draft))).rowcount
             if changed != 1:
                 raise RuntimeError('Application changed while approving')
+        return self.get(application_id)
+
+    def fetch_current_posting(self, application: Application) -> None:
+        """Compare a fresh employer fetch with the fixed snapshot without writing it."""
+        self.require_current_posting(application)
+        frozen = application.snapshot['job']
+        if self.posting_verifier is None:
+            raise ApplicationPostingChanged('Employer verifier is unavailable. Prepare a new verified application.')
+        try:
+            current = self.posting_verifier.verify(frozen['verification']['final_url'], frozen['company'], frozen['title'])
+            if current.status != 'verified':
+                raise ApplicationPostingChanged('Employer posting cannot be verified: ' + current.reason)
+            verification = frozen['verification']
+            changed = [field for field in ('text', 'fingerprint', 'final_url')
+                       if _posting_value(getattr(current, field), field) != _posting_value(verification.get(field), field)]
+            if changed or not current.fingerprint:
+                raise ApplicationPostingChanged('Employer posting changed or is uncertain (' + ', '.join(changed) + '). Prepare a new verified application.')
+            gates = evaluate_application_gates(self.jobs.get(application.job_id), self.profiles.get(), current)
+            if not all(gate.passed for gate in gates):
+                raise ApplicationPostingChanged('Current employer eligibility checks failed: ' + '; '.join(g.reason for g in gates if not g.passed))
+        except ApplicationPostingChanged:
+            raise
+        except Exception as exc:
+            raise ApplicationPostingChanged('Employer posting could not be safely reverified. Prepare a new verified application.') from exc
+        # Detect stored identity/eligibility changes committed during the fetch.
+        self.require_current_posting(application)
+
+    def reverify_posting(self, application: Application) -> None:
+        try:
+            self.fetch_current_posting(application)
+        except ApplicationPostingChanged as exc:
+            with self.db.connect() as conn:
+                self.hold_changed_posting(conn, application, str(exc))
+            raise RuntimeError('Application is on quality hold: ' + str(exc)) from exc
+
+    def export_package(self, application_id: str) -> Path:
+        from careeros.applications.export import ApplicationPackageExporter
+        application = self.get(application_id)
+        if not application:
+            raise LookupError('Application not found')
+        if application.status != 'approved':
+            raise RuntimeError('Approve the application before downloading its local package')
+        self.reverify_posting(application)
+        self.require_manager_clearance(application)
+        self._validate(ApplicationDraft.parse(application.draft), application.snapshot)
+        folder = self.db.path.parent / 'exports'
+        folder.mkdir(parents=True, exist_ok=True)
+        final = folder / f'application-{application.id}.zip'
+        # Build privately, then check the same approval inside a write transaction.
+        with tempfile.TemporaryDirectory(prefix='.export-', dir=folder) as temporary:
+            staged = ApplicationPackageExporter().export(application, self.jobs.get(application.job_id), Path(temporary) / 'package.zip')
+            with self.db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                row = conn.execute('SELECT * FROM applications WHERE id=?', (application_id,)).fetchone()
+                if (row['status'] != 'approved' or row['clearance_stale'] or row['draft_version'] != application.draft_version
+                        or row['draft_json'] != json.dumps(application.draft) or row['snapshot_hash'] != application.snapshot_hash):
+                    raise RuntimeError('Application changed while the package was being prepared')
+                try:
+                    self.require_current_posting(application)
+                except ApplicationPostingChanged as exc:
+                    self.hold_changed_posting(conn, application, str(exc))
+                    conn.commit()
+                    raise RuntimeError('Application is on quality hold: ' + str(exc)) from exc
+                cleared = conn.execute("SELECT 1 FROM hiring_reviews WHERE application_id=? AND cycle=? AND draft_version=? AND verdict='pass'", (application.id, row['manager_cycle'], row['draft_version'])).fetchone()
+                if not cleared:
+                    raise RuntimeError('Hiring Manager clearance changed while exporting')
+                previous = Path(temporary) / 'previous.zip'
+                if final.exists():
+                    shutil.copyfile(final, previous)
+                os.replace(staged, final)
+                try:
+                    conn.execute('INSERT OR REPLACE INTO application_exports VALUES(?,?,?,?,?)',
+                                 (application.id, application.draft_version, application.snapshot_hash, str(final), now()))
+                    conn.commit()
+                except Exception:
+                    if previous.exists():
+                        os.replace(previous, final)
+                    else:
+                        final.unlink(missing_ok=True)
+                    raise
+        return final
+
+    def reject(self, application_id: str, reason: str = '') -> Application:
+        application = self.get(application_id)
+        if not application:
+            raise LookupError('Application not found')
+        if application.status not in {'needs_review', 'approved'} or not application.draft:
+            raise RuntimeError('Only a reviewed draft can be returned for local revision')
+        if application.manager_cycle >= 3:
+            raise RuntimeError('Hiring Manager review limit reached. Prepare a new application.')
+        with self.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            changed = conn.execute("UPDATE applications SET status='manager_review',clearance_stale=1,rejection_reason=?,updated_at=? WHERE id=? AND status=? AND draft_version=?",
+                                   (reason[:2000], now(), application.id, application.status, application.draft_version)).rowcount
+            if changed != 1:
+                raise RuntimeError('Application changed while rejecting')
+            self.queue.enqueue_in_transaction(conn, 'application_revision',
+                {'application_id': application.id, 'manager_revision_cycle': application.manager_cycle,
+                 'draft_version': application.draft_version, 'rejection_reason': reason[:2000],
+                 'findings': [{'issue': reason[:500] or 'User requested a revision', 'revision_instruction': reason[:2000] or 'Recheck clarity and fit using existing evidence only.'}]}, 'ollama', False)
         return self.get(application_id)
 
     def export_markdown(self, application_id: str) -> str:
@@ -404,4 +520,4 @@ def _application(row: sqlite3.Row) -> Application:
     return Application(row['id'], row['job_id'], row['resume_id'], row['task_id'], row['status'],
                        json.loads(row['draft_json']) if row['draft_json'] else None, row['updated_at'],
                        json.loads(row['snapshot_json']) if row['snapshot_json'] else None, row['snapshot_hash'],
-                       row['provider'], row['model'], row['draft_version'], bool(row['clearance_stale']), row['revision_task_id'], row['manager_cycle'], row['manager_task_id'], row['hold_reason'])
+                       row['provider'], row['model'], row['draft_version'], bool(row['clearance_stale']), row['revision_task_id'], row['manager_cycle'], row['manager_task_id'], row['hold_reason'], row['rejection_reason'])

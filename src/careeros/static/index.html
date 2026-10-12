@@ -92,7 +92,7 @@
 
       <section class="station-screen" id="applications-screen" hidden>
         <div class="screen-heading"><button class="back-link" data-station="home" type="button">← Office</button><p class="eyebrow">APPLICATION TEAM</p><h1>Draft review</h1><p>Application materials stay here for your review. CareerOS never submits them.</p></div>
-        <section class="panel"><div class="panel-title"><div><span class="panel-kicker">APPLICATIONS</span><h2>Your drafts</h2></div><button id="refresh-office-applications" class="text-button" type="button">Refresh</button></div><div id="office-application-list" class="card-list"></div></section>
+        <div class="application-station-layout"><section class="panel"><div class="panel-title"><div><span class="panel-kicker">APPLICATIONS</span><h2>Needs your review</h2></div><button id="refresh-office-applications" class="text-button" type="button">Refresh</button></div><div id="office-application-list" class="card-list"></div></section><section class="panel application-review" id="application-review" tabindex="-1" aria-label="Selected application review" hidden></section></div>
       </section>
 
       <section class="station-screen outreach-screen" id="outreach-screen" hidden>
@@ -130,7 +130,6 @@
           </section>
         </div>
         <section class="panel prepare-panel"><div class="panel-title"><div><span class="panel-kicker">NEXT STEP</span><h2>Prepare for a saved role</h2></div><span class="panel-icon blue">↗</span></div><p id="selected-job-copy" class="muted">Choose a saved listing from the Job Board first.</p><form id="prepare-form" class="inline-form"><label>Resume version<select name="resume_id" required><option value="">Choose a resume</option></select></label><label>Planner<select name="provider"><option value="ollama">Local Ollama</option><option value="openai">OpenAI · GPT-6 Luna</option></select></label><button class="button button-dark" type="submit">Create a draft</button></form><p class="small-note">CareerOS prepares a draft for you to review. It never sends an application.</p></section>
-        <section class="panel application-review" id="application-review" hidden></section>
       </section>
 
       <section class="station-screen" id="portfolio-screen" hidden>

@@ -55,6 +55,7 @@ function notify(message) {
 
 function go(station) {
   const home = station === "home" || !$("#" + station + "-screen");
+  if (station !== "applications") state.applicationPollId = (state.applicationPollId || 0) + 1;
   state.officeSelection = home ? null : { type: "station", id: station };
   document.body.dataset.station = home ? "home" : station;
   officeRenderer.setSelection(state.officeSelection);
@@ -275,7 +276,7 @@ function renderWorkerRoster(workers) {
     }
     button.setAttribute("aria-pressed", String(state.officeSelection?.type === "worker" && state.officeSelection.id === worker.id));
     button.dataset.workerColor = worker.color || "cyan";
-    const status = ["idle", "waiting", "paused", "working", "needs_review", "failed", "interrupted"].includes(worker.status) ? worker.status : "waiting";
+    const status = ["idle", "waiting", "paused", "working", "manager_review", "quality_hold", "approved", "needs_review", "failed", "interrupted"].includes(worker.status) ? worker.status : "waiting";
     const copy = element("span", "worker-copy");
     copy.append(element("strong", "", worker.department || worker.id));
     const taskText = worker.task_label || "Waiting for work";
@@ -343,6 +344,7 @@ const WORKER_STATIONS = {
   "job-hunter": "jobs",
   "resume-analyst": "resume",
   "application-prep": "applications",
+  "hiring-manager": "applications",
   "portfolio-engineer": "portfolio",
   "linkedin-outreach": "outreach",
   director: "settings",
@@ -375,11 +377,15 @@ function renderWorkerTooltip(workerId, position) {
   const details = [formatStatus(worker.status).toUpperCase()];
   if (worker.since) details.push(`FOR ${formatElapsed(worker.since)}`);
   if (worker.task_id) details.push(`#${worker.task_id}`);
+  if (worker.latest_verdict === null && worker.id === "hiring-manager") details.push("Latest verdict: Waiting");
+  if (worker.current_item) details.push(worker.current_item);
+  if (worker.latest_verdict) details.push(`Latest verdict: ${worker.latest_verdict}`);
+  if (worker.hold_reason) details.push(worker.hold_reason);
   $("#worker-tooltip-meta").textContent = details.join("  /  ");
   const modelLine = $("#worker-tooltip-model");
   if (worker.model) {
     const modelState = worker.model_status ? ` · ${formatStatus(worker.model_status)}` : "";
-    modelLine.textContent = `Ollama · ${worker.model}${modelState}`;
+    modelLine.textContent = `${worker.provider || "Ollama"} · ${worker.model}${modelState}`;
     modelLine.hidden = false;
   } else {
     modelLine.textContent = "";
@@ -427,6 +433,10 @@ function renderInspector() {
     target = OFFICE_STATIONS[WORKER_STATIONS[worker.id]];
     addInspectorMeta(meta, "Status", formatStatus(worker.status));
     if (worker.task_id) addInspectorMeta(meta, "Queue task", worker.task_id);
+    if (worker.model) addInspectorMeta(meta, "Model", `${worker.provider || "Ollama"} · ${worker.model}`);
+    if (worker.current_item) addInspectorMeta(meta, "Current item", worker.current_item);
+    if (worker.latest_verdict) addInspectorMeta(meta, "Latest verdict", worker.latest_verdict);
+    if (worker.hold_reason) addInspectorMeta(meta, "Hold reason", worker.hold_reason);
     if (worker.since) addInspectorMeta(meta, "Working for", formatElapsed(worker.since));
   } else {
     target = OFFICE_STATIONS[selection.id];
@@ -475,8 +485,8 @@ function formatTimestamp(value) {
 }
 
 function formatCount(value) { return Number.isInteger(value) ? String(value) : "0"; }
-function safeStatus(value) { return ["queued", "running", "completed", "needs_review", "failed", "interrupted"].includes(value) ? value : "queued"; }
-function formatStatus(value) { return String(value || "waiting").replaceAll("_", " "); }
+function safeStatus(value) { return ["queued", "running", "completed", "needs_review", "manager_review", "quality_hold", "approved", "failed", "interrupted"].includes(value) ? value : "queued"; }
+function formatStatus(value) { return ({needs_review: "Needs your review", manager_review: "Hiring Manager review", quality_hold: "Quality hold", approved: "Approved · downloadable"})[value] || String(value || "waiting").replaceAll("_", " "); }
 
 let autopilotUpdating = false;
 $("#autopilot-toggle").addEventListener("click", async () => {
@@ -562,13 +572,13 @@ async function loadOfficeApplications() {
     const applications = await api("/api/applications");
     list.replaceChildren();
     if (!applications.length) list.append(element("p", "empty-state", "The application worker will place reviewable drafts here when a saved role and resume match."));
-    applications.forEach(application => {
+    applications.sort((a, b) => (a.status === "needs_review" ? -1 : 0) - (b.status === "needs_review" ? -1 : 0)).forEach(application => {
       const card = element("button", "application-card", "");
       card.type = "button";
       const row = element("div", "list-card-top");
-      row.append(element("p", "list-card-title", application.job_title || "Application draft"), element("span", `state-label ${application.status === "failed" ? "failed" : ""}`, formatStatus(application.status)));
+      row.append(element("p", "list-card-title", application.job_title || "Application draft"), element("span", `state-label ${safeStatus(application.status)}`, formatStatus(application.status)));
       card.append(row, element("p", "list-card-sub", `Updated ${formatTimestamp(application.updated_at)}`));
-      card.addEventListener("click", () => { go("resume"); loadApplication(application.id); });
+      card.addEventListener("click", () => { go("applications"); loadApplication(application.id); });
       list.append(card);
     });
   } catch (error) {
@@ -882,9 +892,9 @@ function renderApplications(applications) {
     const card = element("button", "application-card", "");
     card.type = "button";
     const row = element("div", "list-card-top");
-    row.append(element("p", "list-card-title", item.job_title || "Application"), element("span", `state-label ${item.status === "failed" ? "failed" : ""}`, item.status.replaceAll("_", " ")));
+    row.append(element("p", "list-card-title", item.job_title || "Application"), element("span", `state-label ${item.status === "failed" ? "failed" : ""}`, formatStatus(item.status)));
     card.append(row, element("p", "list-card-sub", `Updated ${new Date(item.updated_at).toLocaleDateString()}`));
-    card.addEventListener("click", () => loadApplication(item.id));
+    card.addEventListener("click", () => { go("applications"); loadApplication(item.id); });
     list.append(card);
   });
 }
@@ -922,17 +932,25 @@ $("#prepare-form").addEventListener("submit", async event => {
     }
     const created = await api("/api/applications", { method: "POST", body: { job_id: state.selectedJob.id, resume_id: resumeId, provider, confirm_cloud: confirmCloud, preview_token: previewToken } });
     notify("Application draft queued");
-    go("resume");
+    go("applications");
     await pollApplication(created.id);
   } catch (error) { notify(error.message); }
 });
 
-async function pollApplication(id) {
+async function pollApplication(id, renderedAt = null) {
+  const pollId = state.applicationPollId = (state.applicationPollId || 0) + 1;
   for (let attempt = 0; attempt < 180; attempt++) {
+    if (pollId !== state.applicationPollId || document.body.dataset.station !== "applications") return;
     const application = await api(`/api/applications/${encodeURIComponent(id)}`);
-    if (application.status !== "preparing") {
+    if (pollId !== state.applicationPollId) return;
+    const renderKey = `${application.updated_at}:${application.manager_task_status}`;
+    if (renderedAt !== renderKey) {
       renderApplicationReview(application);
+      renderedAt = renderKey;
+    }
+    if (!["preparing", "manager_review"].includes(application.status) || ["failed", "interrupted"].includes(application.manager_task_status)) {
       renderApplications(await api("/api/applications"));
+      await loadOfficeApplications();
       refreshOverview();
       return;
     }
@@ -941,61 +959,116 @@ async function pollApplication(id) {
 }
 
 async function loadApplication(id) {
-  try { renderApplicationReview(await api(`/api/applications/${encodeURIComponent(id)}`)); }
+  if (document.body.dataset.station !== "applications") go("applications");
+  try {
+    const application = await api(`/api/applications/${encodeURIComponent(id)}`);
+    renderApplicationReview(application, true);
+    if (["preparing", "manager_review"].includes(application.status)) {
+      pollApplication(id, `${application.updated_at}:${application.manager_task_status}`).catch(error => notify(error.message));
+    }
+  }
   catch (error) { notify(error.message); }
 }
 
-function renderApplicationReview(application) {
+function renderApplicationReview(application, focus = false) {
   const panel = $("#application-review");
   panel.hidden = false;
   panel.replaceChildren();
-  const title = element("div", "panel-title");
-  const titleBlock = element("div");
-  titleBlock.append(element("span", "panel-kicker", "APPLICATION PACKET"), element("h2", "", application.job_title || "Review your draft"));
-  title.append(titleBlock, element("span", `state-label ${application.status === "failed" ? "failed" : ""}`, application.status.replaceAll("_", " ")));
-  panel.append(title);
-  if (application.status === "preparing") { panel.append(element("p", "muted", "Your planner is working. This screen will update when the draft is ready.")); return; }
-  if (["failed", "interrupted"].includes(application.status)) {
-    panel.append(element("p", "muted", application.task_error || "The planner could not prepare this draft."));
-    const retry = element("button", "button button-soft", application.task_provider === "openai" ? "Start a new cloud task" : "Try again locally");
-    retry.type = "button";
-    retry.addEventListener("click", () => retryApplication(application));
-    panel.append(retry);
-    return;
+  const heading = element("h2", "", application.job_title || "Application review");
+  const status = element("p", `review-status ${application.status === "quality_hold" ? "held" : !application.clearance_stale ? "cleared" : ""}`, formatStatus(application.status));
+  status.setAttribute("role", "status");
+  panel.append(heading, status, element("p", "muted", "Approval enables a local download. CareerOS never submits an application."));
+  const job = application.snapshot?.job;
+  if (job) {
+    panel.append(element("p", "", `${job.company} · ${job.title} · ${job.location || "Location not listed"}`));
+    const link = element("a", "text-button", "View verified employer posting");
+    if (/^https?:\/\//.test(job.verification?.final_url || "")) link.href = job.verification.final_url;
+    link.target = "_blank"; link.rel = "noopener noreferrer";
+    panel.append(link);
+    const gates = element("details");
+    gates.append(element("summary", "", "Employer checks and eligibility"));
+    (job.gates || []).forEach(gate => gates.append(element("p", "", `${gate.name}: ${gate.passed ? "Passed" : "Held"} — ${gate.reason}`)));
+    gates.append(element("p", "muted", "Approval and download recheck the employer posting and your current eligibility."));
+    panel.append(gates);
   }
-  if (!application.draft) { panel.append(element("p", "muted", "No draft is available.")); return; }
+  panel.append(element("p", "review-status", `Draft: ${application.provider || "local"} · ${application.model || "Unknown model"}. Hiring Manager: Ollama · ${application.manager_task_status || "Waiting"}. Review ${application.manager_cycle || 0} of 3.`));
+  if (application.hold_reason) panel.append(element("p", "review-status held", application.hold_reason));
+  if (application.manager_task_error) panel.append(element("p", "review-status held", application.manager_task_error));
+  if (application.rejection_reason) panel.append(element("p", "", `Your revision request: ${application.rejection_reason}`));
+  if (["failed", "interrupted"].includes(application.status)) {
+    panel.append(element("p", "muted", application.task_error || "Draft preparation stopped."));
+    const retry = element("button", "button button-soft", "Prepare a new application");
+    retry.type = "button"; retry.addEventListener("click", () => retryApplication(application)); panel.append(retry);
+  }
+  const history = element("details");
+  history.append(element("summary", "", "All critiques and fixes"));
+  (application.hiring_reviews || []).forEach((review, index, reviews) => {
+    history.append(element("h3", "", `Review ${review.cycle}: ${review.verdict}`));
+    history.append(element("p", "muted", `${review.provider} · ${review.model} · Draft ${review.draft_version}`));
+    review.findings.forEach(finding => history.append(element("p", "", `${finding.severity}: ${finding.issue}. ${finding.revision_instruction} Evidence: ${finding.evidence_ids.join(", ") || "Deterministic check"}`)));
+    const nextDraft = reviews[index + 1]?.reviewed_draft || application.draft;
+    if (review.reviewed_draft) {
+      const original = element("details"); original.append(element("summary", "", "Draft reviewed in this cycle"), element("pre", "", JSON.stringify(review.reviewed_draft, null, 2))); history.append(original);
+      if (nextDraft && JSON.stringify(nextDraft) !== JSON.stringify(review.reviewed_draft)) {
+        const fixes = element("details"); fixes.append(element("summary", "", "Revised draft after this critique"), element("pre", "", JSON.stringify(nextDraft, null, 2))); history.append(fixes);
+      } else history.append(element("p", "muted", "No later draft changes recorded."));
+    }
+  });
+  panel.append(history);
+  if (!application.draft) { panel.append(element("p", "muted", "Waiting for a complete draft.")); return; }
   const draft = application.draft;
+  const canEdit = ["needs_review", "approved"].includes(application.status) && application.manager_cycle < 3;
   const grid = element("div", "review-grid");
+  const resume = addEditor(grid, "Tailored resume", "resume_text", draft.resume_text, "full");
   const cover = addEditor(grid, "Cover letter", "cover_letter", draft.cover_letter, "full");
-  const alignment = addEditor(grid, "Resume alignment · one item per line", "resume_alignment", (draft.resume_alignment || []).join("\n"));
-  const nextSteps = addEditor(grid, "Next steps · one item per line", "next_steps", (draft.next_steps || []).join("\n"));
-  const answers = addEditor(grid, "Answers · JSON object", "answers", JSON.stringify(draft.answers || {}, null, 2), "full");
+  const answers = addEditor(grid, "Application answers (question and answer JSON)", "answers", JSON.stringify(draft.answers || {}, null, 2), "full");
+  const evidence = element("details", "full");
+  evidence.append(element("summary", "", "Claims and fixed evidence"));
+  const claims = addEditor(evidence, "Evidence links (JSON)", "claims", JSON.stringify(draft.claims || [], null, 2));
+  evidence.append(element("pre", "", JSON.stringify(application.snapshot?.evidence || {}, null, 2)));
+  grid.append(evidence);
+  [resume, cover, answers, claims].forEach(editor => { editor.readOnly = true; });
   panel.append(grid);
   const actions = element("div", "review-actions");
-  const save = element("button", "button button-soft", "Save edits");
-  save.type = "button";
-  save.addEventListener("click", async () => { try { await saveApplicationDraft(application.id, cover, alignment, answers, nextSteps); notify("Draft edits saved"); } catch (error) { notify(error.message); } });
-  actions.append(save);
-  if (application.status === "needs_review") {
-    const approve = element("button", "button button-dark", "Approve draft");
-    approve.type = "button";
-    approve.addEventListener("click", async () => {
-      try {
-        await saveApplicationDraft(application.id, cover, alignment, answers, nextSteps);
-        await api(`/api/applications/${encodeURIComponent(application.id)}/approve`, { method: "POST" });
-        notify("Draft approved for local export");
-        await loadApplication(application.id);
-        renderApplications(await api("/api/applications"));
-      } catch (error) { notify(error.message); }
-    });
-    actions.append(approve);
+  const refresh = async () => { await loadApplication(application.id); await loadOfficeApplications(); };
+  const changed = () => resume.value !== draft.resume_text || cover.value !== draft.cover_letter || answers.value !== JSON.stringify(draft.answers || {}, null, 2) || claims.value !== JSON.stringify(draft.claims || [], null, 2);
+  if (canEdit) {
+    const edit = element("button", "button button-soft", "Edit"); edit.type = "button";
+    edit.addEventListener("click", () => { [resume, cover, answers, claims].forEach(editor => { editor.readOnly = false; }); save.hidden = false; resume.focus(); });
+    const save = element("button", "button button-soft", "Save edits and request manager review"); save.type = "button"; save.hidden = true;
+    save.addEventListener("click", async () => { try { await saveApplicationDraft(application.id, draft, resume, cover, answers, claims); notify("Edits saved. Hiring Manager review queued locally."); await refresh(); } catch (error) { notify(error.message); } });
+    actions.append(edit, save);
+  } else if (application.manager_cycle >= 3) panel.append(element("p", "muted", "The three-review limit is reached. Prepare a new application for further changes."));
+  if (["needs_review", "approved"].includes(application.status) && application.manager_cycle < 3) {
+    const reason = element("label", "full"); reason.append(element("span", "", "Reason for revision (optional)")); const input = element("textarea"); input.maxLength = 2000; input.rows = 2; reason.append(input); panel.append(reason);
+    const reject = element("button", "button button-soft", "Reject and revise locally"); reject.type = "button";
+    reject.addEventListener("click", async () => { try { await api(`/api/applications/${encodeURIComponent(application.id)}/reject`, {method: "POST", body: {reason: input.value}}); notify("Revision queued with Ollama."); await refresh(); } catch (error) { notify(error.message); } }); actions.append(reject);
+  }
+  if (application.status === "needs_review" && !application.clearance_stale) {
+    const approve = element("button", "button button-dark", "Approve for local download"); approve.type = "button";
+    approve.setAttribute("aria-label", "Approve for local download. Nothing will be submitted.");
+    approve.addEventListener("click", async () => { try {
+      if (changed()) throw new Error("Save your edits and wait for Hiring Manager clearance before approving.");
+      await api(`/api/applications/${encodeURIComponent(application.id)}/approve`, {method: "POST"}); notify("Approved for local download. Nothing was submitted."); await refresh();
+    } catch (error) { notify(error.message); await refresh(); } }); actions.prepend(approve);
   } else if (application.status === "approved") {
-    const exportLink = element("a", "button button-dark", "Export approved draft");
-    exportLink.href = `/api/applications/${encodeURIComponent(application.id)}/export`;
-    exportLink.download = `careeros-${application.id.slice(0, 8)}.md`;
-    actions.append(exportLink);
+    const download = element("button", "button button-dark", "Download package"); download.type = "button";
+    download.addEventListener("click", async () => { try {
+      if (changed()) throw new Error("Save edits for another review before downloading changed materials.");
+      const response = await fetch(`/api/applications/${encodeURIComponent(application.id)}/export`);
+      if (!response.ok) { const error = await response.json(); throw new Error(error.detail || "Package download failed"); }
+      const url = URL.createObjectURL(await response.blob()); const link = element("a"); link.href = url; link.download = `application-${application.id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify("Local package downloaded. Nothing was submitted.");
+    } catch (error) { notify(error.message); await refresh(); } }); actions.prepend(download);
   }
   panel.append(actions);
+  const fact = element("details"); fact.append(element("summary", "", "Add an accurate new fact"), element("p", "muted", "Save a new fact locally, then prepare a new application. This draft keeps its original evidence snapshot."));
+  const nameLabel = element("label"); nameLabel.append(element("span", "", "Fact name")); const name = element("input"); name.maxLength = 120; nameLabel.append(name);
+  const valueLabel = element("label"); valueLabel.append(element("span", "", "Accurate fact")); const value = element("textarea"); value.maxLength = 500; valueLabel.append(value);
+  const confirmation = element("label"); const checkbox = element("input"); checkbox.type = "checkbox"; confirmation.append(checkbox, element("span", "", "I confirm this is accurate"));
+  const attest = element("button", "button button-soft", "Save confirmed fact locally"); attest.type = "button";
+  attest.addEventListener("click", async () => { try { if (!checkbox.checked) throw new Error("Confirm that this fact is accurate first."); const result = await api(`/api/applications/${encodeURIComponent(application.id)}/evidence`, {method: "POST", body: {name: name.value, value: value.value, confirm_accurate: checkbox.checked}}); notify(result.message); checkbox.checked = false; } catch(error) { notify(error.message); } });
+  fact.append(nameLabel, valueLabel, confirmation, attest); panel.append(fact);
+  if (focus) panel.focus({preventScroll: true});
 }
 
 function addEditor(root, title, field, value, extraClass = "") {
@@ -1010,11 +1083,11 @@ function addEditor(root, title, field, value, extraClass = "") {
   return textarea;
 }
 
-async function saveApplicationDraft(id, cover, alignment, answers, nextSteps) {
-  let answerValue;
-  try { answerValue = JSON.parse(answers.value || "{}"); }
-  catch { throw new Error("Answers must be valid JSON, such as {\"question\": \"answer\"}"); }
-  await api(`/api/applications/${encodeURIComponent(id)}/draft`, { method: "PUT", body: { cover_letter: cover.value, resume_alignment: alignment.value.split("\n").map(value => value.trim()).filter(Boolean), answers: answerValue, next_steps: nextSteps.value.split("\n").map(value => value.trim()).filter(Boolean) } });
+async function saveApplicationDraft(id, original, resume, cover, answers, claims) {
+  let answerValue, claimValue;
+  try { answerValue = JSON.parse(answers.value || "{}"); claimValue = JSON.parse(claims.value || "[]"); }
+  catch { throw new Error("Answers and evidence links must be valid JSON."); }
+  await api(`/api/applications/${encodeURIComponent(id)}/draft`, {method: "PUT", body: {...original, resume_text: resume.value, cover_letter: cover.value, answers: answerValue, claims: claimValue}});
 }
 
 async function retryApplication(application) {

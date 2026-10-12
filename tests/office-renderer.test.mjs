@@ -111,29 +111,14 @@ test("renderer draws the connected conveyor lanes over an atmospheric backdrop",
   });
 });
 
-test("an active task moves one parcel between its worker station and the next station", () => {
+test("an active task cannot manufacture a handoff parcel", () => {
   withReducedMotion(() => {
     const { canvas, rectCalls } = canvasHarness();
     const renderer = new OfficeRenderer(canvas);
-    const working = {
-      id: "job-hunter",
-      name: "Job Hunter",
-      color: "cyan",
-      status: "working",
-      station_id: "job-hunters-01",
-      task_id: "task-123",
-    };
-    renderer.update({ workers: [working], counts: {} });
-    const firstPosition = rectCalls.filter(call => call.style === PALETTE.parcel).at(-1)?.x;
-    renderer.draw(500);
-    const nextPosition = rectCalls.filter(call => call.style === PALETTE.parcel).at(-1)?.x;
-    assert.notEqual(firstPosition, undefined, "active work should display a parcel");
-    assert.notEqual(nextPosition, firstPosition, "the parcel should move over time along the belt");
-
-    const parcelCountBeforeStop = rectCalls.filter(call => call.style === PALETTE.parcel).length;
-    renderer.update({ workers: [{ ...working, status: "needs_review" }], counts: {} });
-    assert.equal(rectCalls.filter(call => call.style === PALETTE.parcel).length, parcelCountBeforeStop,
-      "the parcel should disappear when the task is no longer running");
+    renderer.update({ workers: [{id: "job-hunter", status: "working", station_id: "job-hunters-01", task_id: "task-123"}], counts: {} });
+    assert.deepEqual(renderer.activeConveyorParcels(500), []);
+    assert.deepEqual(renderer.activeHandoffTokens(500), []);
+    assert.equal(rectCalls.filter(call => call.style === PALETTE.parcel).length, 0);
     renderer.destroy();
   });
 });
@@ -250,21 +235,22 @@ test("renderer queues recognized handoffs and ignores unknown event types", () =
       handoff(3, "project-submitted"), handoff(4, "project-defect-returned"),
       handoff(5, "project-qa-passed"), handoff(6, "unrecognized"),
     ]);
-    assert.deepEqual(renderer.handoffs.map(item => item.kind), ["document", "document", "project", "ticket", "green-pass"]);
+    assert.deepEqual(renderer.handoffs.map(item => item.kind), ["document", "ticket", "project", "ticket", "green-pass"]);
+    renderer.draw(10000);
     assert.ok(rectCalls.filter(call => call.style === PALETTE.green).length > greenPixelsBefore,
       "the green pass should be painted in the office");
     renderer.destroy();
   });
 });
 
-test("handoff tokens travel between workers for 700 ms and expire after 2 seconds", () => {
+test("handoff tokens exchange between workers and settle after 1300 ms and expire after 2 seconds", () => {
   withAnimationFrames(() => {
     const { canvas } = canvasHarness();
     const renderer = new OfficeRenderer(canvas, { now: () => 1000 });
     renderer.playHandoffs([handoff(1, "draft-submitted")]);
     const start = renderer.activeHandoffTokens(1000)[0];
-    const middle = renderer.activeHandoffTokens(1350)[0];
-    const end = renderer.activeHandoffTokens(1700)[0];
+    const middle = renderer.activeHandoffTokens(1250)[0];
+    const end = renderer.activeHandoffTokens(2300)[0];
     assert.deepEqual({ col: start.col, row: start.row }, { col: 4, row: 8 });
     assert.deepEqual({ col: end.col, row: end.row }, { col: 9, row: 2 });
     assert.ok(middle.col > Math.min(start.col, end.col) && middle.col < Math.max(start.col, end.col));
@@ -315,4 +301,119 @@ test("cursor drains a capped handoff page before advancing to the global latest 
   cursor.receive({ events: [handoff(101, "draft-submitted")], latest_id: 101 });
   assert.deepEqual(played.map(event => event.id), Array.from({ length: 101 }, (_, index) => index + 1));
   assert.equal(cursor.afterId, 101);
+});
+
+test('Hiring Manager has a distinct male sprite at the persisted review station', () => {
+  const manager = WORKER_APPEARANCE['hiring-manager'];
+  assert.equal(manager.gender, 'male');
+  assert.equal(manager.stationId, 'hiring-manager-01');
+  assert.ok(manager.sprite.some(row => row.includes('M')), 'short beard defines the male manager sprite');
+  assert.notDeepEqual(manager.sprite, WORKER_APPEARANCE['application-prep'].sprite);
+  assert.ok(STATIONS.some(station => station.workerStationId === manager.stationId));
+});
+
+test('working status alone cannot create conveyor or worker movement', () => {
+  withAnimationFrames(() => {
+    const renderer = new OfficeRenderer(canvasHarness().canvas);
+    renderer.update({workers: [{id: 'hiring-manager', station_id: 'hiring-manager-01', status: 'working', task_id: 'real-task'}]});
+    const actor = renderer.actors.get('hiring-manager');
+    const before = {col: actor.col, row: actor.row};
+    renderer.advanceActors(1000);
+    assert.deepEqual({col: actor.col, row: actor.row}, before);
+    assert.deepEqual(renderer.activeConveyorParcels(500), []);
+    assert.deepEqual(renderer.activeHandoffTokens(500), []);
+    renderer.destroy();
+  });
+});
+
+test('application review uses current evidence schema and explicit local actions', async () => {
+  const app = await readFile(new URL('../src/careeros/static/app.js', import.meta.url), 'utf8');
+  const html = await readFile(new URL('../src/careeros/static/index.html', import.meta.url), 'utf8');
+  assert.ok(app.includes('Download package'));
+  assert.ok(app.includes('Approve for local download'));
+  assert.ok(app.includes('Reject and revise locally'));
+  assert.ok(app.includes('I confirm this is accurate'));
+  assert.ok(app.includes('reviewed_draft'));
+  assert.ok(app.includes('hold_reason'));
+  assert.ok(!app.includes('resume_alignment'));
+  assert.ok(html.indexOf('id="application-review"') < html.indexOf('id="outreach-screen"'));
+});
+
+test('real persisted application handoffs animate into and out of the Hiring Manager station', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const python = process.env.CAREEROS_TEST_PYTHON || `${root}/.venv/bin/python`;
+  const events = JSON.parse(execFileSync(python, ['-c', `
+import json,sys,tempfile
+from pathlib import Path
+from types import SimpleNamespace
+sys.path[:0] = ['src', 'tests']
+from careeros.main import create_app
+from careeros.config import Settings
+from careeros.jobs.verification import VerificationResult
+from fastapi.testclient import TestClient
+from conftest import FakePlanner, seed_verified_application_job
+with tempfile.TemporaryDirectory() as folder:
+    app = create_app(Settings(data_dir=Path(folder), worker_enabled=False))
+    fake = FakePlanner()
+    app.state.gateway.planners['ollama'] = fake
+    with TestClient(app) as client:
+        resume = client.post('/api/resumes', json={'name':'Base','text':'Built a Python API'}).json()
+        job = client.post('/api/jobs/manual', json={'title':'Backend Intern','company':'Acme','url':'https://jobs.example/1'}).json()
+        seed_verified_application_job(app, job['id'])
+        with app.state.db.connect() as conn:
+            row = conn.execute('SELECT * FROM job_verifications WHERE job_id=?',(job['id'],)).fetchone()
+        result = VerificationResult(**{key:row[key] for key in ('status','reason','final_url','checked_at','text','fingerprint')})
+        app.state.application_service.posting_verifier = SimpleNamespace(verify=lambda *args:result)
+        application, _ = app.state.application_service.create(job['id'],resume['id'],'ollama')
+        app.state.worker.run_once()
+        app.state.worker.run_once()
+        print(json.dumps(client.get('/api/workspace/handoffs?after_id=0').json()['events']))
+`], { cwd: root, encoding: 'utf8' }));
+  assert.deepEqual(events.map(event => event.event_type), ['draft-submitted', 'critique-returned']);
+  assert.equal(events[0].to_worker, 'hiring-manager-01');
+  withAnimationFrames(() => {
+    let now = 1000;
+    const renderer = new OfficeRenderer(canvasHarness().canvas, {now: () => now});
+    const workers = [
+      {id: 'application-prep', station_id: 'application-team-01', status: 'needs_review'},
+      {id: 'hiring-manager', station_id: 'hiring-manager-01', status: 'needs_review'},
+    ];
+    renderer.update({workers});
+    const prep = renderer.actors.get('application-prep');
+    const manager = renderer.actors.get('hiring-manager');
+    const homes = [prep,manager].map(actor => ({col: actor.col,row:actor.row}));
+    renderer.draw(1500);
+    assert.deepEqual([prep,manager].map(actor => ({col: actor.col,row:actor.row})), homes, 'no event means no character movement');
+    const cursor = new HandoffCursor(renderer);
+    cursor.initialize({handoff_cursor: 0});
+    cursor.receive({events, latest_id: events.at(-1).id});
+    assert.equal(renderer.handoffs.length, 2);
+    now = 1450;
+    renderer.draw(now);
+    const meeting = [prep,manager].map(actor => ({col: actor.col,row:actor.row}));
+    assert.notDeepEqual(meeting[0], homes[0], 'the sender approaches after a saved event');
+    assert.notDeepEqual(meeting[1], homes[1], 'the manager approaches after a saved event');
+    assert.equal(prep.facing, 'right');
+    assert.equal(manager.facing, 'left');
+    renderer.update({workers});
+    cursor.receive({events, latest_id: events.at(-1).id});
+    renderer.playHandoffs(events);
+    assert.deepEqual([prep,manager].map(actor => ({col:actor.col,row:actor.row})), meeting, 'snapshot refresh must preserve the interaction');
+    assert.equal(renderer.handoffs.length, 2, 'same saved IDs cannot restart or duplicate interaction');
+    const token = renderer.activeHandoffTokens(now)[0];
+    assert.ok(token.col > homes[0].col && token.col < homes[1].col, 'the item is exchanged where the characters meet');
+    now = 2400;
+    renderer.draw(now);
+    assert.deepEqual([prep,manager].map(actor => ({col:actor.col,row:actor.row})), homes, 'both workers return to their ordinary positions');
+    now = 3450;
+    renderer.draw(now);
+    assert.notDeepEqual([prep,manager].map(actor => ({col:actor.col,row:actor.row})), homes, 'the persisted critique return triggers its own interaction');
+    now = 5001;
+    renderer.draw(now);
+    assert.deepEqual([prep,manager].map(actor => ({col:actor.col,row:actor.row})), homes);
+    assert.deepEqual(renderer.activeHandoffTokens(now), []);
+    renderer.destroy();
+  });
 });

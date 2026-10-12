@@ -175,7 +175,7 @@ export const STATIONS = Object.freeze([
   station("outreach", 17, 1, "REVIEW", null, null, "terminal"),
   station("applications", 1, 7, "DRAFT BAY", null, null, "files"),
   station("applications", 4, 7, "REVIEW DESK", "application-team-01", { col: 4, row: 8 }, "files"),
-  station("applications", 7, 7, "PACKET QA", null, null, "terminal"),
+  station("applications", 7, 7, "HIRING MANAGER", "hiring-manager-01", { col: 7, row: 8 }, "terminal"),
   station("portfolio", 10, 7, "BUILD LAB", null, null, "workbench"),
   station("portfolio", 13, 7, "TEST BENCH", "engineering-team-01", { col: 13, row: 8 }, "workbench"),
   station("portfolio", 16, 7, "STAGING", null, null, "workbench"),
@@ -305,10 +305,19 @@ function workerAppearance(color, stationId, waitCell, gear) {
   };
 }
 
+const MANAGER_BODY_SPRITE = Object.freeze([
+  "...HHHHH...", "..HHHHHHH..", "..HSSSSSH..", "..SSESESS..",
+  "..SSSSSSS..", "...MMMMM...", "...SMMMS...", "...CCCCC...",
+  "..JJJJJJJ..", ".JTTATTTTJ.", ".JJTATTTJJ.", "..JTTTTTJ..",
+  "...JBBJ....", "...PPPP....", "..PP...PP..", ".PP.....PP.", ".KK.....KK.", "KK.......KK",
+]);
+const MANAGER_SPRITE = addFinePixels(addFinePixels(MANAGER_BODY_SPRITE));
+
 export const WORKER_APPEARANCE = Object.freeze({
   "job-hunter": workerAppearance("cyan", "job-hunters-01", { col: 0, row: 5 }, "visor"),
   "resume-analyst": workerAppearance("green", "resume-team-01", { col: 3, row: 5 }, "glasses"),
   "application-prep": workerAppearance("amber", "application-team-01", { col: 6, row: 5 }, "clipboard"),
+  "hiring-manager": {...workerAppearance("green", "hiring-manager-01", { col: 7, row: 8 }, "clipboard"), gender: "male", sprite: MANAGER_SPRITE, outline: silhouetteOutline(MANAGER_SPRITE)},
   "portfolio-engineer": workerAppearance("purple", "engineering-team-01", { col: 15, row: 5 }, "goggles"),
   "linkedin-outreach": workerAppearance("coral", "outreach-team-01", { col: 12, row: 5 }, "headset"),
   director: workerAppearance("coral", "dispatch-01", { col: 9, row: 5 }, "cap"),
@@ -316,6 +325,7 @@ export const WORKER_APPEARANCE = Object.freeze({
 
 export const SPRITE_COLORS = Object.freeze({
   H: "#43392e",
+  M: "#43392e",
   S: "#d5a17d",
   E: "#2b2923",
   C: "#778676",

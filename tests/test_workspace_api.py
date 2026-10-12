@@ -213,3 +213,28 @@ def test_outreach_worker_shows_model_install_state(client, fake_planner):
     assert worker["model"] == "qwen3.5:4b-q4_K_M"
     assert worker["model_status"] == "model_missing"
     assert "ollama pull qwen3.5:4b-q4_k_m" in worker["task_label"].casefold()
+
+
+def test_hiring_manager_worker_reports_persisted_review_and_hold(client):
+    from test_applications_api import application_inputs
+    started = client.post('/api/applications', json=application_inputs(client)).json()
+    client.app.state.worker.run_once()
+    workers = client.get('/api/workspace').json()['workers']
+    manager = next(w for w in workers if w['id'] == 'hiring-manager')
+    assert manager['station_id'] == 'hiring-manager-01'
+    assert manager['gender'] == 'male'
+    assert manager['provider'] == 'ollama'
+    assert manager['current_item'] == 'Backend Intern'
+    assert manager['status'] == 'manager_review'
+    assert manager['latest_verdict'] is None
+    events = client.get('/api/workspace/handoffs?after_id=0').json()['events']
+    assert events[0]['to_worker'] == 'hiring-manager-01'
+    client.app.state.worker.run_once()
+    manager = next(w for w in client.get('/api/workspace').json()['workers'] if w['id'] == 'hiring-manager')
+    assert manager['latest_verdict'] == 'pass'
+    assert manager['status'] == 'needs_review'
+    with client.app.state.db.connect() as conn:
+        conn.execute("UPDATE applications SET status='quality_hold',hold_reason='Posting closed',clearance_stale=1 WHERE id=?", (started['id'],))
+    manager = next(w for w in client.get('/api/workspace').json()['workers'] if w['id'] == 'hiring-manager')
+    assert manager['status'] == 'quality_hold'
+    assert manager['hold_reason'] == 'Posting closed'

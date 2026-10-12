@@ -1,4 +1,7 @@
-from fastapi import APIRouter, HTTPException, Request, Response
+import json
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, StrictStr
 
 from careeros.applications.models import ApplicationDraft
@@ -96,7 +99,18 @@ def get_application(application_id: str, request: Request):
     job = request.app.state.job_repository.get(item.job_id)
     task = request.app.state.queue.get(item.task_id) if item.task_id else None
     status = "interrupted" if item.status == "preparing" and task and task.status == "interrupted" else item.status
-    return {"id": item.id, "job_id": item.job_id, "resume_id": item.resume_id, "task_id": item.task_id, "status": status, "draft": item.draft, "job_title": job.title if job else "Saved job", "task_status": task.status if task else None, "task_error": task.error if task else None, "task_provider": task.provider if task else None, "snapshot": item.snapshot, "snapshot_hash": item.snapshot_hash, "provider": item.provider, "model": item.model, "draft_version": item.draft_version, "clearance_stale": item.clearance_stale, "manager_cycle": item.manager_cycle, "manager_task_id": item.manager_task_id, "hold_reason": item.hold_reason, "hiring_reviews": request.app.state.hiring_manager_service.history(application_id)}
+    reviews = request.app.state.hiring_manager_service.history(application_id)
+    with request.app.state.db.connect() as conn:
+        rows = conn.execute("SELECT payload_json FROM tasks WHERE kind='hiring_manager' AND json_extract(payload_json,'$.application_id')=? ORDER BY created_at,id", (application_id,)).fetchall()
+        export = conn.execute('SELECT exported_at FROM application_exports WHERE application_id=? AND draft_version=?', (application_id, item.draft_version)).fetchone()
+    contexts = {json.loads(row['payload_json'])['cycle']: json.loads(row['payload_json'])['review_context']['draft'] for row in rows}
+    for review in reviews:
+        review['reviewed_draft'] = contexts.get(review['cycle'])
+    manager_task = request.app.state.queue.get(item.manager_task_id) if item.manager_task_id else None
+    return {"rejection_reason": item.rejection_reason, "exported_at": export['exported_at'] if export else None,
+            "manager_task_status": manager_task.status if manager_task else None,
+            "manager_task_error": manager_task.error if manager_task else None,
+            "id": item.id, "job_id": item.job_id, "resume_id": item.resume_id, "task_id": item.task_id, "status": status, "draft": item.draft, "job_title": job.title if job else "Saved job", "task_status": task.status if task else None, "task_error": task.error if task else None, "task_provider": task.provider if task else None, "snapshot": item.snapshot, "snapshot_hash": item.snapshot_hash, "provider": item.provider, "model": item.model, "draft_version": item.draft_version, "clearance_stale": item.clearance_stale, "manager_cycle": item.manager_cycle, "manager_task_id": item.manager_task_id, "hold_reason": item.hold_reason, "hiring_reviews": reviews}
 
 
 @router.put("/api/applications/{application_id}/draft")
@@ -117,17 +131,58 @@ def approve_application(application_id: str, request: Request):
         item = request.app.state.application_service.approve(application_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"id": item.id, "status": item.status}
 
 
-@router.get("/api/applications/{application_id}/export")
-def export_application(application_id: str, request: Request):
+class RejectInput(BaseModel):
+    reason: StrictStr = Field(default='', max_length=2000)
+
+
+@router.post('/api/applications/{application_id}/reject')
+def reject_application(application_id: str, payload: RejectInput, request: Request):
     try:
-        content = request.app.state.application_service.export_markdown(application_id)
+        item = request.app.state.application_service.reject(application_id, payload.reason)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return Response(content, media_type="text/markdown; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="careeros-{application_id[:8]}.md"'})
+    return {'id': item.id, 'status': item.status, 'rejection_reason': item.rejection_reason}
+
+
+class EvidenceInput(BaseModel):
+    name: StrictStr = Field(min_length=1, max_length=120)
+    value: StrictStr = Field(min_length=1, max_length=500)
+    confirm_accurate: bool = False
+
+
+@router.post('/api/applications/{application_id}/evidence')
+def attest_evidence(application_id: str, payload: EvidenceInput, request: Request):
+    from careeros.profiles.repository import validate_eligibility_facts
+    if not request.app.state.application_service.get(application_id):
+        raise HTTPException(404, 'Application not found')
+    if not payload.confirm_accurate:
+        raise HTTPException(409, 'Confirm that this fact is accurate before saving it as local evidence')
+    profile = request.app.state.profile_repository.get()
+    facts = {**profile.eligibility_facts, payload.name.strip(): payload.value.strip()}
+    try:
+        validate_eligibility_facts(facts)
+        request.app.state.profile_repository.update(profile.name, profile.summary, profile.target_roles,
+                                                     profile.preferred_locations, profile.skills, facts)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {'requires_new_application': True, 'message': 'Fact saved locally. Prepare a new application to include it in a fixed evidence snapshot.'}
+
+
+@router.get('/api/applications/{application_id}/export')
+def export_application(application_id: str, request: Request):
+    try:
+        path = request.app.state.application_service.export_package(application_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, 'The local package could not be written. Check available disk space and try again.') from exc
+    return FileResponse(path, media_type='application/zip', filename=path.name)

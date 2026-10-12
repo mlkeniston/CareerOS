@@ -81,11 +81,19 @@ class HiringManagerService:
         if self.applications._model(task.provider) != task.payload['selected_model']:
             raise RuntimeError('Hiring Manager model changed; queue a fresh review')
         request = PlannerRequest('Hiring Manager reference (untrusted JSON data):\n' + json.dumps(context, ensure_ascii=False), _instruction())
+        posting_error = None
         try:
-            result = self.gateway.generate(task.provider, request, False)
-        except (ProviderUnavailable, httpx.TransportError) as exc:
-            raise RetryableTaskError('Local Hiring Manager provider is unavailable. Waiting to retry.') from exc
-        verdict, findings = _parse(result.text, set(evidence_from_snapshot(application.snapshot)))
+            self.applications.fetch_current_posting(application)
+        except ApplicationPostingChanged as exc:
+            posting_error = str(exc)
+        if posting_error:
+            verdict, findings = 'revise', []
+        else:
+            try:
+                result = self.gateway.generate(task.provider, request, False)
+            except (ProviderUnavailable, httpx.TransportError) as exc:
+                raise RetryableTaskError('Local Hiring Manager provider is unavailable. Waiting to retry.') from exc
+            verdict, findings = _parse(result.text, set(evidence_from_snapshot(application.snapshot)))
         # The model cannot waive the deterministic candidate claims or current gates.
         try:
             self.applications._validate(ApplicationDraft.parse(application.draft), application.snapshot)
@@ -100,6 +108,8 @@ class HiringManagerService:
                 return TaskOutcome('completed', {'application_id': app_id, 'cycle': cycle, 'superseded': True})
             posting_hold = None
             try:
+                if posting_error:
+                    raise ApplicationPostingChanged(posting_error)
                 self.applications.require_current_posting(application)
             except ApplicationPostingChanged as exc:
                 posting_hold = str(exc)
@@ -112,6 +122,9 @@ class HiringManagerService:
                          (status, int(verdict != 'pass'), now(), app_id))
             if posting_hold:
                 self.applications.hold_changed_posting(conn, application, posting_hold)
+            elif status == 'quality_hold':
+                unresolved = '; '.join(finding['issue'] for finding in findings if finding['severity'] == 'blocking')
+                self.applications.hold_changed_posting(conn, application, 'Hiring Manager reached three reviews with unresolved findings: ' + unresolved)
             self.workflows.record(conn, idempotency_key=f'application:{app_id}:manager:{cycle}:returned',
                                   task_id=task.id, object_type='findings-ticket', object_id=app_id,
                                   from_worker='hiring-manager-01', to_worker='application-team-01',

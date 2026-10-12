@@ -10,6 +10,7 @@ _WORKERS = (
     ("job-hunter", "Job Hunters", "job-hunters-01", "cyan", "job_discovery"),
     ("resume-analyst", "Resume Team", "resume-team-01", "green", None),
     ("application-prep", "Application Team", "application-team-01", "amber", "application"),
+    ("hiring-manager", "Hiring Manager", "hiring-manager-01", "green", "hiring_manager"),
     ("portfolio-engineer", "Engineering Team", "engineering-team-01", "purple", "portfolio"),
     ("linkedin-outreach", "LinkedIn Outreach", "outreach-team-01", "coral", "outreach"),
     ("director", "Dispatch", "dispatch-01", "coral", None),
@@ -17,6 +18,8 @@ _WORKERS = (
 _TASK_LABELS = {
     "job_discovery": "Scan public listings",
     "application": "Prepare application draft",
+    "hiring_manager": "Review application evidence",
+    "application_revision": "Revise application locally",
     "portfolio": "Prepare portfolio proposal",
     "outreach": "Prepare LinkedIn outreach draft",
 }
@@ -85,6 +88,27 @@ def get_workspace(request: Request):
                 outreach_model_state, outreach_model_name,
             )
             worker.update({"status": status, "task_label": label})
+        if worker_id == 'hiring-manager':
+            worker.update({'gender': 'male', 'provider': 'ollama', 'model': model_name,
+                           'model_status': model_state, 'current_item': None, 'latest_verdict': None, 'hold_reason': None})
+            with db.connect() as conn:
+                row = conn.execute("SELECT a.*,j.title FROM applications a LEFT JOIN jobs j ON j.id=a.job_id ORDER BY CASE a.status WHEN 'manager_review' THEN 0 WHEN 'needs_review' THEN 1 WHEN 'quality_hold' THEN 2 ELSE 3 END,a.updated_at DESC LIMIT 1").fetchone()
+                latest = conn.execute('SELECT verdict,model FROM hiring_reviews WHERE application_id=? ORDER BY cycle DESC LIMIT 1', (row['id'],)).fetchone() if row else None
+            if row:
+                manager_task = queue.get(row['manager_task_id']) if row['manager_task_id'] else None
+                worker.update({'status': row['status'], 'current_item': row['title'],
+                               'task_id': row['manager_task_id'], 'task_label': 'Reviewing ' + (row['title'] or 'application'),
+                               'latest_verdict': latest['verdict'] if latest else None, 'hold_reason': row['hold_reason']})
+                if manager_task:
+                    worker['model'] = manager_task.payload.get('selected_model', model_name)
+                    if manager_task.status == 'running':
+                        worker['status'] = 'working'
+                        worker['since'] = manager_task.updated_at
+                    elif manager_task.status in {'failed', 'interrupted'} and row['status'] == 'manager_review':
+                        worker['status'] = manager_task.status
+                worker['task_label'] = ('Needs your review: ' if row['status'] == 'needs_review' else 'Approved: ' if row['status'] == 'approved' else 'Reviewing ') + (row['title'] or 'application')
+            else:
+                worker.update({'status': 'waiting', 'task_label': 'Waiting for an application draft'})
         worker_items.append(worker)
 
     activity = [_activity(task) for task in tasks[:10]]
