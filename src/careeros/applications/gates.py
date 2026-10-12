@@ -41,15 +41,18 @@ def _dates(text):
     return values
 
 
+_COUNTRY_CODES = {
+    'united states': 'US', 'usa': 'US', 'us': 'US', 'u s': 'US', 'american': 'US',
+    'canada': 'CA', 'canadian': 'CA',
+    'united kingdom': 'UK', 'uk': 'UK', 'u k': 'UK', 'british': 'UK',
+}
+_COUNTRY_PATTERN = '|'.join(_COUNTRY_CODES)
+
+
 def _country(text):
-    text = _normalize(text)
-    if re.search(r'\b(united states|usa|us|u s|american)\b', text):
-        return 'US'
-    if re.search(r'\b(canada|canadian)\b', text):
-        return 'CA'
-    if re.search(r'\b(united kingdom|uk|u k|british)\b', text):
-        return 'UK'
-    return None
+    # This accepts a country token already extracted from its eligibility clause.
+    # Searching arbitrary prose for 'us' mistakes a pronoun for a country.
+    return _COUNTRY_CODES.get(_normalize(text))
 
 
 def _country_fact_matches(value: str | None, country: str | None) -> bool | None:
@@ -63,9 +66,10 @@ def _country_fact_matches(value: str | None, country: str | None) -> bool | None
     for item in re.split(r"[,;/]", value):
         normalized = _normalize(item)
         # A country mention inside arbitrary prose is not an affirmative fact.
-        if not re.fullmatch(r"(?:authorized to work in )?(?:united states|usa|us|u s|american|canada|canadian|united kingdom|uk|u k|british)(?: citizen| citizenship| work authorization)?", normalized):
+        match = re.fullmatch(r"(?:authorized to work in )?(" + _COUNTRY_PATTERN + r")(?: citizen| citizenship| work authorization)?", normalized)
+        if not match:
             return None
-        countries.append(_country(item))
+        countries.append(_country(match[1]))
     return country in countries
 
 
@@ -84,35 +88,28 @@ def _condition_result(condition: str, facts: dict[str, str]) -> bool | None:
     if (' and ' in c or ' or ' in c) and not ('between' in c and 'graduat' in c):
         return None
     if 'sponsor' in c:
+        if not re.fullmatch(r'(?:we (?:cannot|do not|are unable to) (?:provide|offer) (?:visa )?sponsorship|no (?:visa )?sponsorship(?: available| provided| offered)?)', c):
+            return None
         value = facts.get('sponsorship')
-        if value is None:
-            return None
-        if re.search(r'no|not|cannot|unable|without', c):
-            return value in {'no', 'not needed', 'none'} if value in {'yes', 'no', 'not needed', 'none', 'needed'} else None
-        return None
+        return value in {'no', 'not needed', 'none'} if value in {'yes', 'no', 'not needed', 'none', 'needed'} else None
     if 'citizen' in c:
-        value = facts.get('citizenship')
-        country = _country(c)
-        return _country_fact_matches(value, country)
+        match = re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:a )?(' + _COUNTRY_PATTERN + r') citizen', c)
+        return _country_fact_matches(facts.get('citizenship'), _country(match[1])) if match else None
     if re.search(r'authori[sz]|right to work|eligible to work', c):
-        value = facts.get('work_authorization')
-        country = _country(c)
-        return _country_fact_matches(value, country)
+        match = re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:authorized|authorised|eligible) to work in (?:the )?(' + _COUNTRY_PATTERN + r')(?: to join us)?', c)
+        return _country_fact_matches(facts.get('work_authorization'), _country(match[1])) if match else None
     if 'enroll' in c:
-        value = facts.get('enrollment')
-        # More specific degree or study requirements need an exact user answer.
-        if re.search(r'bachelor|master|phd|computer science|engineering', c):
+        if not re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:currently )?enrolled(?: in a degree program)?', c):
             return None
+        value = facts.get('enrollment')
         return value == 'yes' if value in {'yes', 'no'} else None
     if re.search(r'graduat', c):
-        value = facts.get('graduation')
-        dates = _dates(c)
-        user_dates = _dates(value or '')
-        if len(user_dates) != 1:
+        date_pattern = r'(?:20\d{2}-(?:0[1-9]|1[0-2])|(?:' + '|'.join(_MONTHS) + r') 20\d{2})'
+        if not re.fullmatch(r'must graduate between ' + date_pattern + ' and ' + date_pattern, c):
             return None
-        if len(dates) == 2 and ('between' in c or 'through' in c):
-            return min(dates) <= user_dates[0] <= max(dates)
-        return None
+        dates = _dates(c)
+        user_dates = _dates(facts.get('graduation', ''))
+        return min(dates) <= user_dates[0] <= max(dates) if len(dates) == 2 and len(user_dates) == 1 else None
     if 'experience' in c:
         value = facts.get('experience_years')
         required = re.search(r'\b(\d+)\+?\s+years?\b', c)
