@@ -302,3 +302,17 @@ test("initial snapshot cursor suppresses old events and consecutive polls do not
   assert.equal(reloaded.afterId, 6);
   assert.deepEqual(played.map(event => event.id), [5, 6], "reload must not enqueue the earlier events");
 });
+
+test("cursor drains a capped handoff page before advancing to the global latest ID", () => {
+  const played = [];
+  const cursor = new HandoffCursor({ playHandoffs(events) { played.push(...events); } });
+  cursor.initialize({ handoff_cursor: 0 });
+  cursor.receive({
+    events: Array.from({ length: 100 }, (_, index) => handoff(index + 1, "draft-submitted")),
+    latest_id: 101,
+  });
+  assert.equal(cursor.afterId, 100, "the next request must begin after the last delivered event");
+  cursor.receive({ events: [handoff(101, "draft-submitted")], latest_id: 101 });
+  assert.deepEqual(played.map(event => event.id), Array.from({ length: 101 }, (_, index) => index + 1));
+  assert.equal(cursor.afterId, 101);
+});

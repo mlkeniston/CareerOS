@@ -38,11 +38,14 @@ export class HandoffCursor {
 
   receive(batch) {
     if (this.afterId === null) return;
-    const events = Array.isArray(batch?.events)
-      ? batch.events.filter(event => Number.isSafeInteger(event.id) && event.id > this.afterId)
-      : [];
+    const returned = Array.isArray(batch?.events) ? batch.events : [];
+    const events = returned.filter(event => Number.isSafeInteger(event.id) && event.id > this.afterId);
     if (events.length) this.renderer.playHandoffs(events);
-    if (Number.isSafeInteger(batch?.latest_id)) this.afterId = Math.max(this.afterId, batch.latest_id);
+    if (returned.length) {
+      if (events.length) this.afterId = Math.max(this.afterId, ...events.map(event => event.id));
+    } else if (Number.isSafeInteger(batch?.latest_id)) {
+      this.afterId = Math.max(this.afterId, batch.latest_id);
+    }
   }
 }
 
