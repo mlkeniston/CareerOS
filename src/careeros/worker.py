@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal
 
 from careeros.queue import Task, TaskQueue
+from careeros.workflows.errors import RetryableTaskError
 
 
 @dataclass(slots=True)
@@ -38,6 +39,12 @@ class Worker:
         try:
             outcome = self.handlers[task.kind](task)
             self.queue.finish(task.id, outcome.result, outcome.status)
+        except RetryableTaskError as exc:
+            safe = _safe_error(exc)
+            if task.provider != "ollama" or not self.queue.retry(
+                task.id, safe, delay_seconds=min(60 * 2 ** (task.attempt_count - 1), 900)
+            ):
+                self.queue.fail(task.id, safe)
         except Exception as exc:
             self.queue.fail(task.id, _safe_error(exc))
         return True

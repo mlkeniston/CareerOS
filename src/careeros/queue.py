@@ -4,7 +4,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from careeros.db import Database
@@ -34,6 +34,8 @@ class Task:
     error: str | None
     created_at: str | None = None
     updated_at: str | None = None
+    attempt_count: int = 0
+    available_at: str | None = None
 
 
 class TaskQueue:
@@ -73,13 +75,38 @@ class TaskQueue:
         marks = ",".join("?" for _ in allowed_kinds)
         with self.db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(f"SELECT * FROM tasks WHERE status='queued' AND kind IN ({marks}) ORDER BY created_at LIMIT 1", tuple(allowed_kinds)).fetchone()
+            row = conn.execute(f"SELECT * FROM tasks WHERE status='queued' AND (available_at IS NULL OR available_at<=?) AND kind IN ({marks}) ORDER BY created_at LIMIT 1", (now(), *allowed_kinds)).fetchone()
             if row is None:
                 conn.commit()
                 return None
-            changed = conn.execute("UPDATE tasks SET status='running',updated_at=? WHERE id=? AND status='queued'", (now(), row["id"])).rowcount
+            changed = conn.execute("UPDATE tasks SET status='running',attempt_count=attempt_count+1,available_at=NULL,updated_at=? WHERE id=? AND status='queued'", (now(), row["id"])).rowcount
             conn.commit()
         return self.get(row["id"]) if changed else None
+
+    def retry(self, task_id: str, message: str, delay_seconds: int, max_attempts: int = 3) -> bool:
+        if not 0 < delay_seconds <= 3600:
+            raise ValueError("Retry delay must be between 1 and 3600 seconds")
+        if max_attempts <= 0:
+            raise ValueError("Retry limit must be positive")
+        safe = " ".join((message or "Task failed").split())[:240]
+        stamp = now()
+        available_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat(timespec="seconds")
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT status,provider,attempt_count FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None:
+                raise LookupError("Task not found")
+            if row["status"] != "running" or row["provider"] != "ollama":
+                raise InvalidTaskTransition("Only running Ollama tasks can be retried")
+            if row["attempt_count"] >= max_attempts:
+                return False
+            changed = conn.execute(
+                "UPDATE tasks SET status='queued',available_at=?,error=?,updated_at=? WHERE id=? AND status='running' AND provider='ollama'",
+                (available_at, safe, stamp, task_id),
+            ).rowcount
+            if changed != 1:
+                raise InvalidTaskTransition("Task changed state before it could be retried")
+        return True
 
     def finish(self, task_id: str, result: dict[str, Any], status: str = "completed") -> None:
         with self.db.connect() as conn:
@@ -135,4 +162,5 @@ def _task(row: Any) -> Task:
         bool(row["cloud_confirmed"]), row["status"],
         json.loads(row["result_json"]) if row["result_json"] else None,
         row["error"], row["created_at"], row["updated_at"],
+        row["attempt_count"], row["available_at"],
     )

@@ -1,0 +1,2 @@
+ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN available_at TEXT;

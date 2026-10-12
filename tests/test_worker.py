@@ -1,4 +1,5 @@
 from threading import Event, Thread
+from datetime import datetime, timezone
 
 from careeros.jobs.models import SourceResult
 from careeros.queue import TaskQueue
@@ -46,3 +47,47 @@ def test_slow_job_discovery_does_not_block_application_worker(client):
         if discovery_thread.ident is not None:
             discovery_thread.join(timeout=3)
     assert not discovery_thread.is_alive()
+
+
+def test_worker_requeues_only_explicit_transient_local_failure(queue):
+    from careeros.workflows.errors import RetryableTaskError
+
+    local_id = queue.enqueue("sample", {}, "ollama")
+    worker = Worker(queue, {"sample": lambda task: (_ for _ in ()).throw(RetryableTaskError("Ollama offline"))})
+    assert worker.run_once()
+    pending = queue.get(local_id)
+    assert pending.status == "queued"
+    assert pending.attempt_count == 1
+    delay = (datetime.fromisoformat(pending.available_at) - datetime.now(timezone.utc)).total_seconds()
+    assert 58 <= delay <= 60
+    assert worker.run_once() is False
+
+    cloud_id = queue.enqueue("sample", {}, "openai", cloud_confirmed=True)
+    assert worker.run_once()
+    assert queue.get(cloud_id).status == "failed"
+    assert queue.get(cloud_id).available_at is None
+
+
+def test_worker_fails_local_task_after_third_transient_attempt(queue):
+    from careeros.workflows.errors import RetryableTaskError
+
+    task_id = queue.enqueue("sample", {}, "ollama")
+    worker = Worker(queue, {"sample": lambda task: (_ for _ in ()).throw(RetryableTaskError("Ollama offline"))})
+    for attempt in (1, 2, 3):
+        assert worker.run_once()
+        task = queue.get(task_id)
+        assert task.attempt_count == attempt
+        assert task.status == ("failed" if attempt == 3 else "queued")
+        if attempt < 3:
+            with queue.db.connect() as conn:
+                conn.execute("UPDATE tasks SET available_at='2000-01-01T00:00:00+00:00' WHERE id=?", (task_id,))
+
+
+def test_worker_does_not_retry_other_errors(queue):
+    task_id = queue.enqueue("sample", {}, "ollama")
+    worker = Worker(queue, {"sample": lambda task: (_ for _ in ()).throw(ValueError("invalid model JSON"))})
+    assert worker.run_once()
+    task = queue.get(task_id)
+    assert task.status == "failed"
+    assert task.attempt_count == 1
+    assert task.available_at is None

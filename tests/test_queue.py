@@ -1,6 +1,8 @@
+from datetime import datetime, timezone
+
 import pytest
 
-from careeros.queue import PaidUseConfirmationRequired, TaskQueue
+from careeros.queue import InvalidTaskTransition, PaidUseConfirmationRequired, TaskQueue
 from careeros.worker import TaskOutcome, Worker
 
 
@@ -71,3 +73,51 @@ def test_task_failure_requires_running_state_and_is_idempotent(db):
     assert queue.get(task_id).status == "failed"
     with pytest.raises(RuntimeError, match="transition"):
         queue.finish(task_id, {}, "completed")
+
+
+def test_retry_is_bounded_and_cloud_is_never_requeued(queue):
+    local_id = queue.enqueue("application", {}, "ollama")
+    first = queue.claim_next({"application"})
+    assert first.id == local_id
+    assert first.attempt_count == 1
+    assert queue.retry(local_id, "Ollama offline", delay_seconds=300, max_attempts=3)
+    pending = queue.get(local_id)
+    assert pending.status == "queued"
+    assert pending.attempt_count == 1
+    assert datetime.fromisoformat(pending.available_at) > datetime.now(timezone.utc)
+    assert queue.claim_next({"application"}) is None
+
+    cloud_id = queue.enqueue("application", {}, "openai", cloud_confirmed=True)
+    assert queue.claim_next({"application"}).id == cloud_id
+    with pytest.raises(InvalidTaskTransition):
+        queue.retry(cloud_id, "request timed out", delay_seconds=1)
+    assert queue.get(cloud_id).status == "running"
+
+    for attempt in (2, 3):
+        with queue.db.connect() as conn:
+            conn.execute("UPDATE tasks SET available_at='2000-01-01T00:00:00+00:00' WHERE id=?", (local_id,))
+        claimed = queue.claim_next({"application"})
+        assert claimed.id == local_id
+        assert claimed.attempt_count == attempt
+        assert queue.retry(local_id, "Ollama offline", delay_seconds=1, max_attempts=3) is (attempt < 3)
+        if attempt == 2:
+            assert queue.get(local_id).status == "queued"
+            assert datetime.fromisoformat(queue.get(local_id).available_at) > datetime.now(timezone.utc)
+    assert queue.get(local_id).status == "running"
+
+
+@pytest.mark.parametrize("delay,limit", [(0, 3), (3601, 3), (1, 0)])
+def test_retry_rejects_invalid_bounds(queue, delay, limit):
+    task_id = queue.enqueue("application", {}, "ollama")
+    queue.claim_next({"application"})
+    with pytest.raises(ValueError):
+        queue.retry(task_id, "offline", delay_seconds=delay, max_attempts=limit)
+
+
+def test_retry_requires_running_task_and_sanitizes_diagnostic(queue):
+    task_id = queue.enqueue("application", {}, "ollama")
+    with pytest.raises(InvalidTaskTransition):
+        queue.retry(task_id, "offline", delay_seconds=1)
+    queue.claim_next({"application"})
+    assert queue.retry(task_id, "offline\n" + "x" * 300, delay_seconds=1)
+    assert queue.get(task_id).error == "offline " + "x" * 232

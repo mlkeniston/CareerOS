@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from careeros.config import Settings
 from careeros.main import create_app
 from careeros.planner.protocols import PlannerResult
+from careeros.queue import TaskQueue
 
 
 class FakePlanner:
@@ -50,6 +51,11 @@ def client(app):
 @pytest.fixture
 def db(app):
     return app.state.db
+
+
+@pytest.fixture
+def queue(db):
+    return TaskQueue(db)
 
 
 @pytest.fixture
