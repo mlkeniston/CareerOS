@@ -1,4 +1,5 @@
 import json
+from conftest import seed_verified_application_job
 
 import pytest
 
@@ -96,9 +97,11 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     resume = app.state.resume_repository.create("Private", "PRIVATE RESUME TEXT")
     app.state.profile_repository.update("", "PRIVATE PROFILE SUMMARY", [], [], [])
 
+    seed_verified_application_job(app, job.id)
     running_app, running_task = app.state.application_service.create(job.id, resume.id, "ollama")
     review_app, review_task = app.state.application_service.create(job.id, resume.id, "ollama")
     approved_app, approved_task = app.state.application_service.create(job.id, resume.id, "ollama")
+    app.state.profile_repository.update("", "PRIVATE PROFILE SUMMARY", [], [], [])
     queue = app.state.queue
     assert queue.claim_next({"application"}).id == running_task
     assert queue.claim_next({"application"}).id == review_task

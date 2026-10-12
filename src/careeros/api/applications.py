@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
 
 from careeros.applications.models import ApplicationDraft
 from careeros.planner.gateway import PaidUseConfirmationRequired, ProviderUnavailable
@@ -26,14 +26,24 @@ def preview_application(payload: ApplicationPreviewInput, request: Request):
         data, token = request.app.state.application_service.preview(payload.job_id, payload.resume_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return {"sent_data": data, "preview_token": token, "model": "gpt-6-luna"}
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"sent_data": data, "preview_token": token, "model": data["provider_models"]["openai"]}
+
+
+class ClaimInput(BaseModel):
+    claim_id: StrictStr = Field(min_length=1, max_length=100)
+    text: StrictStr = Field(min_length=1, max_length=1000)
+    evidence_ids: list[StrictStr] = Field(max_length=5)
+    quote_anchors: list[StrictStr] = Field(max_length=5)
 
 
 class DraftInput(BaseModel):
-    cover_letter: str = Field(max_length=30000)
-    resume_alignment: list[str] = Field(max_length=30)
-    answers: dict[str, str] = Field(default_factory=dict)
-    next_steps: list[str] = Field(default_factory=list, max_length=30)
+    resume_text: StrictStr = Field(min_length=1, max_length=30000)
+    cover_letter: StrictStr = Field(max_length=30000)
+    claims: list[ClaimInput] = Field(max_length=100)
+    answers: dict[StrictStr, StrictStr] = Field(default_factory=dict, max_length=30)
+    next_steps: list[StrictStr] = Field(default_factory=list, max_length=30)
 
 
 @router.post("/api/applications", status_code=202)
@@ -70,7 +80,7 @@ def get_application(application_id: str, request: Request):
     job = request.app.state.job_repository.get(item.job_id)
     task = request.app.state.queue.get(item.task_id) if item.task_id else None
     status = "interrupted" if item.status == "preparing" and task and task.status == "interrupted" else item.status
-    return {"id": item.id, "job_id": item.job_id, "resume_id": item.resume_id, "task_id": item.task_id, "status": status, "draft": item.draft, "job_title": job.title if job else "Saved job", "task_status": task.status if task else None, "task_error": task.error if task else None, "task_provider": task.provider if task else None}
+    return {"id": item.id, "job_id": item.job_id, "resume_id": item.resume_id, "task_id": item.task_id, "status": status, "draft": item.draft, "job_title": job.title if job else "Saved job", "task_status": task.status if task else None, "task_error": task.error if task else None, "task_provider": task.provider if task else None, "snapshot": item.snapshot, "snapshot_hash": item.snapshot_hash, "provider": item.provider, "model": item.model, "draft_version": item.draft_version, "clearance_stale": item.clearance_stale}
 
 
 @router.put("/api/applications/{application_id}/draft")

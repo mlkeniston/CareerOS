@@ -1,4 +1,5 @@
 from threading import Event, Thread
+from conftest import seed_verified_application_job
 from datetime import datetime, timezone
 
 from careeros.jobs.models import SourceResult
@@ -23,6 +24,7 @@ def test_worker_runs_queued_work_even_when_before_claim_hook_fails(db, caplog):
 def test_slow_job_discovery_does_not_block_application_worker(client):
     resume = client.post("/api/resumes", json={"name": "Backend", "text": "Python"}).json()
     job = client.post("/api/jobs/manual", json={"title": "Backend Intern", "company": "Acme", "url": "https://jobs.example/1"}).json()
+    seed_verified_application_job(client.app, job["id"])
     started = client.post("/api/applications", json={"job_id": job["id"], "resume_id": resume["id"], "provider": "ollama"}).json()
     source_started, release_source = Event(), Event()
 

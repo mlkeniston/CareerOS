@@ -70,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     worker = Worker(queue)
     worker.register("application", application_service.handle_task)
+    worker.register("application_revision", application_service.handle_revision_task)
     worker.register("outreach", outreach_service.handle_task)
     worker.register("portfolio", portfolio_service.handle_task)
     discovery_worker = Worker(queue, before_claim=tick_autopilot)
