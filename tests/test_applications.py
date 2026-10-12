@@ -18,6 +18,7 @@ def test_resume_to_approved_export(client):
     start = client.post("/api/applications", json={"job_id": job["id"], "resume_id": resume.json()["id"], "provider": "ollama", "confirm_cloud": False})
     assert start.status_code == 202
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     application = client.get("/api/applications/" + start.json()["id"]).json()
     assert application["status"] == "needs_review"
     assert client.get("/api/applications/" + application["id"] + "/export").status_code == 409
@@ -39,10 +40,12 @@ def test_application_can_be_edited_and_approved_after_review(client):
     seed_verified_application_job(client.app, job["id"])
     started = client.post("/api/applications", json={"job_id": job["id"], "resume_id": resume["id"], "provider": "ollama"}).json()
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     draft = {"resume_text": "Python and SQL", "cover_letter": "Python and SQL", "claims": [{"claim_id": "c1", "text": "Python and SQL", "evidence_ids": ["resume:1"], "quote_anchors": ["Python and SQL"]}], "answers": {}, "next_steps": []}
     changed = client.put(f"/api/applications/{started['id']}/draft", json=draft)
     assert changed.status_code == 200
     assert changed.json()["draft"]["cover_letter"] == "Python and SQL"
+    client.app.state.worker.run_once()  # clear the edited draft
     assert client.post(f"/api/applications/{started['id']}/approve").json()["status"] == "approved"
 
 
@@ -107,7 +110,7 @@ def test_review_draft_and_task_completion_commit_atomically(client, fake_planner
 
     application = client.app.state.application_service.get(started["id"])
     saved_task = client.app.state.queue.get(task.id)
-    assert application.status == "needs_review"
+    assert application.status == "manager_review"
     assert saved_task.status == "needs_review"
     assert saved_task.result == {"application_id": application.id}
     assert len(fake_planner.calls) == 1
@@ -127,7 +130,7 @@ def test_recovered_prepared_application_does_not_call_planner_again(client, fake
     assert client.app.state.worker.run_once()
 
     assert len(fake_planner.calls) == calls
-    assert client.app.state.application_service.get(started["id"]).status == "needs_review"
+    assert client.app.state.application_service.get(started["id"]).status == "manager_review"
     assert client.app.state.queue.get(started["task_id"]).status == "needs_review"
 
 
@@ -334,8 +337,11 @@ def test_revision_uses_fixed_snapshot_and_latest_findings(client, fake_planner):
     seed_verified_application_job(client.app, job["id"])
     app, _ = client.app.state.application_service.create(job['id'], resume['id'], 'ollama')
     client.app.state.worker.run_once()
+    fake_planner.result = PlannerResult(json.dumps({'verdict': 'revise', 'findings': [{'issue': 'Include source evidence', 'severity': 'blocking', 'evidence_ids': ['resume:1'], 'revision_instruction': 'Lead with Python.'}]}))
+    client.app.state.worker.run_once()
+    fake_planner.result = None
     client.put(f"/api/resumes/{resume['id']}", json={'name': 'Base', 'text': 'New facts'})
-    task_id = client.app.state.queue.enqueue('application_revision', {'application_id': app.id, 'findings': [{'issue': 'Include source evidence'}]}, 'ollama')
+    task_id = next(task.id for task in client.app.state.queue.list() if task.kind == 'application_revision')
     assert client.app.state.worker.run_once()
     assert client.app.state.queue.get(task_id).status == 'needs_review'
     assert 'Include source evidence' in fake_planner.calls[-1].task
@@ -365,6 +371,7 @@ def test_revision_replay_is_idempotent(client, fake_planner):
     seed_verified_application_job(client.app, job['id'])
     app, _ = client.app.state.application_service.create(job['id'], resume['id'], 'ollama')
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     task_id = client.app.state.queue.enqueue('application_revision', {'application_id': app.id, 'findings': []}, 'ollama')
     client.app.state.worker.run_once()
     version = client.app.state.application_service.get(app.id).draft_version
@@ -380,6 +387,7 @@ def test_paid_revision_requires_its_own_complete_preview_confirmation(client, fa
     seed_verified_application_job(client.app, job['id'])
     app, _ = client.app.state.application_service.create(job['id'], resume['id'], 'ollama')
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     client.app.state.gateway.openai_configured = True
     client.app.state.gateway.planners['openai'] = fake_planner
     task_id = client.app.state.queue.enqueue('application_revision', {'application_id': app.id, 'findings': []}, 'openai', True)
@@ -450,6 +458,7 @@ def test_paid_revision_refuses_changed_model_after_preview(client, fake_planner)
     service = client.app.state.application_service
     app, _ = service.create(job['id'], resume['id'], 'ollama')
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     fake_planner.model = 'previewed-model'
     client.app.state.gateway.openai_configured = True
     client.app.state.gateway.planners['openai'] = fake_planner

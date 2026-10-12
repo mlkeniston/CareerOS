@@ -39,12 +39,15 @@ class Application:
     draft_version: int = 0
     clearance_stale: bool = True
     revision_task_id: str | None = None
+    manager_cycle: int = 0
+    manager_task_id: str | None = None
 
 
 class ApplicationService:
     def __init__(self, db: Database, queue: TaskQueue, gateway: PlannerGateway, jobs: JobRepository, profiles: ProfileRepository, resumes: ResumeRepository):
         self.db, self.queue, self.gateway = db, queue, gateway
         self.jobs, self.profiles, self.resumes = jobs, profiles, resumes
+        self.hiring_manager = None
 
     def preview(self, job_id: str, resume_id: str) -> tuple[dict, str]:
         snapshot = self._snapshot(job_id, resume_id)
@@ -54,7 +57,7 @@ class ApplicationService:
         application = self.get(application_id)
         if not application:
             raise LookupError('Application not found')
-        if application.status not in {'preparing', 'needs_review'} or application.draft is None:
+        if application.status not in {'preparing', 'manager_review', 'needs_review'} or application.draft is None:
             raise RuntimeError('Application is not awaiting a revision')
         context = self._revision_context(application, provider, findings or [])
         return context, _snapshot_token(context)
@@ -94,7 +97,7 @@ class ApplicationService:
             conn.execute('BEGIN IMMEDIATE')
             if dispatch_is_open(conn, fingerprint):
                 return None
-            existing = conn.execute("SELECT 1 FROM applications WHERE job_id=? AND resume_id=? AND status IN ('preparing','needs_review','approved') LIMIT 1", (job_id, resume_id)).fetchone()
+            existing = conn.execute("SELECT 1 FROM applications WHERE job_id=? AND resume_id=? AND status IN ('preparing','manager_review','needs_review','approved','quality_hold') LIMIT 1", (job_id, resume_id)).fetchone()
             if existing:
                 return None
             task_id = self.queue.enqueue_in_transaction(conn, 'application', {'application_id': application_id}, 'ollama', False)
@@ -125,11 +128,18 @@ class ApplicationService:
             if not application:
                 raise LookupError('Application record not found')
             if revision:
+                completed = self.queue.get(task.id)
+                if completed and completed.status == 'needs_review' and completed.result == {'application_id': app_id}:
+                    return TaskOutcome('needs_review', {'application_id': app_id})
                 if application.revision_task_id == task.id:
                     return TaskOutcome('needs_review', {'application_id': app_id})
-                if application.status not in {'preparing', 'needs_review'} or application.draft is None:
+                if application.status not in {'preparing', 'manager_review', 'needs_review'} or application.draft is None:
                     raise RuntimeError('Application is not awaiting a revision')
-            elif application.status in {'needs_review', 'approved'} and application.draft is not None:
+                if application.manager_cycle >= 3:
+                    raise RuntimeError('Hiring Manager review limit reached. Prepare a new application.')
+                if task.payload.get('manager_revision_cycle') is not None and (task.payload['manager_revision_cycle'] != application.manager_cycle or task.payload.get('draft_version') != application.draft_version):
+                    raise RuntimeError('Application changed before its manager revision')
+            elif application.status in {'manager_review', 'needs_review', 'approved', 'quality_hold'} and application.draft is not None:
                 return TaskOutcome('needs_review', {'application_id': app_id})
             elif application.status != 'preparing':
                 raise RuntimeError('Application is no longer preparing')
@@ -172,6 +182,8 @@ class ApplicationService:
                 if changed != 1:
                     raise RuntimeError('Application changed state while its draft was being prepared')
                 self._save_links(conn, app_id, draft)
+                if self.hiring_manager is not None:
+                    self.hiring_manager.enqueue_in_transaction(conn, app_id)
                 self.queue.finish_in_transaction(conn, task.id, {'application_id': app_id}, 'needs_review')
             return TaskOutcome('needs_review', {'application_id': app_id})
         except RetryableTaskError:
@@ -209,8 +221,12 @@ class ApplicationService:
         application = self.get(application_id)
         if not application:
             raise LookupError('Application not found')
+        if application.status == 'manager_review' and application.draft == asdict(draft):
+            return application
         if application.status not in {'needs_review', 'approved'} or application.snapshot is None:
             raise RuntimeError('Application can only be edited while it is ready for review')
+        if application.manager_cycle >= 3:
+            raise RuntimeError('Hiring Manager review limit reached. Prepare a new application before editing.')
         self._snapshot(application.job_id, application.resume_id, require_ready=True)
         self._validate(draft, application.snapshot)
         with self.db.connect() as conn:
@@ -220,25 +236,32 @@ class ApplicationService:
             if changed != 1:
                 raise RuntimeError('Application changed while editing')
             self._save_links(conn, application_id, draft)
+            if self.hiring_manager is not None:
+                self.hiring_manager.enqueue_in_transaction(conn, application_id)
         return self.get(application_id)
 
     def approve(self, application_id: str) -> Application:
         application = self.get(application_id)
         if not application:
             raise LookupError('Application not found')
+        self.require_manager_clearance(application)
         if application.status == 'approved':
             return application
         if application.status != 'needs_review' or application.draft is None or application.snapshot is None:
             raise RuntimeError('Only a complete draft can be approved')
         self._validate(ApplicationDraft.parse(application.draft), application.snapshot)
         with self.db.connect() as conn:
-            conn.execute("UPDATE applications SET status='approved',updated_at=? WHERE id=? AND status='needs_review'", (now(), application_id))
+            changed = conn.execute("UPDATE applications SET status='approved',updated_at=? WHERE id=? AND status='needs_review' AND draft_version=? AND clearance_stale=0",
+                                   (now(), application_id, application.draft_version)).rowcount
+            if changed != 1:
+                raise RuntimeError('Application changed while approving')
         return self.get(application_id)
 
     def export_markdown(self, application_id: str) -> str:
         application = self.get(application_id)
         if not application:
             raise LookupError('Application not found')
+        self.require_manager_clearance(application)
         if application.status != 'approved' or application.draft is None or application.snapshot is None:
             raise RuntimeError('Approve the application before exporting it')
         draft = ApplicationDraft.parse(application.draft)
@@ -251,6 +274,16 @@ class ApplicationService:
         lines.extend(['', '## Next steps', ''])
         lines.extend('- ' + value for value in draft.next_steps)
         return '\n'.join(lines).rstrip() + '\n'
+
+    def require_manager_clearance(self, application: Application) -> None:
+        if application.status == 'quality_hold':
+            raise RuntimeError('Application is on quality hold; approval and export are unavailable.')
+        with self.db.connect() as conn:
+            cleared = conn.execute("SELECT 1 FROM hiring_reviews WHERE application_id=? AND cycle=? AND draft_version=? AND verdict='pass'",
+                                   (application.id, application.manager_cycle, application.draft_version)).fetchone()
+        if application.clearance_stale or not cleared:
+            raise RuntimeError('Hiring Manager must clear the current draft before approval or export.')
+        self._snapshot(application.job_id, application.resume_id, require_ready=True)
 
     def _model(self, provider: str) -> str:
         return str(getattr(self.gateway.planners.get(provider), 'model', 'unknown'))
@@ -324,4 +357,4 @@ def _application(row: sqlite3.Row) -> Application:
     return Application(row['id'], row['job_id'], row['resume_id'], row['task_id'], row['status'],
                        json.loads(row['draft_json']) if row['draft_json'] else None, row['updated_at'],
                        json.loads(row['snapshot_json']) if row['snapshot_json'] else None, row['snapshot_hash'],
-                       row['provider'], row['model'], row['draft_version'], bool(row['clearance_stale']), row['revision_task_id'])
+                       row['provider'], row['model'], row['draft_version'], bool(row['clearance_stale']), row['revision_task_id'], row['manager_cycle'], row['manager_task_id'])

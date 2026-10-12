@@ -28,6 +28,7 @@ def test_application_cannot_enqueue_without_verified_passing_job(client):
 def test_manual_edit_revalidates_claims_and_stales_previous_clearance(client):
     started = client.post('/api/applications', json=application_inputs(client)).json()
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     route = f"/api/applications/{started['id']}"
     before = client.get(route).json()
     invalid = asdict(evidence_draft('Built an AWS cluster', anchor='Built a Python API'))
@@ -39,7 +40,7 @@ def test_manual_edit_revalidates_claims_and_stales_previous_clearance(client):
         conn.execute('UPDATE applications SET clearance_stale=0 WHERE id=?', (started['id'],))
     changed = client.put(route + '/draft', json=asdict(evidence_draft()))
     assert changed.status_code == 200
-    assert changed.json()['status'] == 'needs_review'
+    assert changed.json()['status'] == 'manager_review'
     after = client.get(route).json()
     assert after['draft_version'] == before['draft_version'] + 1
     assert after['clearance_stale'] is True
@@ -74,6 +75,7 @@ def test_manual_edit_requires_employer_verification_to_remain_valid(client):
     inputs = application_inputs(client)
     started = client.post('/api/applications', json=inputs).json()
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     with client.app.state.db.connect() as conn:
         conn.execute("UPDATE job_verifications SET status='held' WHERE job_id=?", (inputs['job_id'],))
     response = client.put(f"/api/applications/{started['id']}/draft", json=asdict(evidence_draft()))
@@ -98,6 +100,7 @@ def test_paid_revision_preview_binds_executing_model_and_requires_fresh_confirma
     inputs = application_inputs(client)
     started = client.post('/api/applications', json=inputs).json()
     client.app.state.worker.run_once()
+    client.app.state.worker.run_once()  # independent manager pass
     fake = client.app.state.fake_planner
     fake.model = 'previewed-model'
     client.app.state.gateway.openai_configured = True

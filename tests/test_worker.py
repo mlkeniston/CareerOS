@@ -43,7 +43,7 @@ def test_slow_job_discovery_does_not_block_application_worker(client):
         discovery_thread.start()
         assert source_started.wait(timeout=1)
         assert client.app.state.worker.run_once() is True
-        assert client.app.state.application_service.get(started["id"]).status == "needs_review"
+        assert client.app.state.application_service.get(started["id"]).status == "manager_review"
     finally:
         release_source.set()
         if discovery_thread.ident is not None:

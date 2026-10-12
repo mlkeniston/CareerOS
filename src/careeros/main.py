@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from careeros.api import applications, autopilot, health, jobs, outreach, portfolio, profiles, settings as settings_api, tasks, workflows, workspace
 from careeros.applications.service import ApplicationService
+from careeros.applications.hiring_manager import HiringManagerService
 from careeros.autopilot.scheduler import AutopilotScheduler
 from careeros.autopilot.state import AutopilotState
 from careeros.autopilot.discovery import JobDiscoveryService
@@ -53,6 +54,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     outreach_planner = OllamaPlanner(settings.ollama_base_url, settings.outreach_model)
     application_service = ApplicationService(db, queue, gateway, job_repository, profile_repository, resume_repository)
+    hiring_manager_service = HiringManagerService(db, queue, gateway, application_service)
+    application_service.hiring_manager = hiring_manager_service
     outreach_service = OutreachService(db, queue, outreach_planner, job_repository, profile_repository, resume_repository)
     portfolio_paths = PortfolioPaths(settings.data_dir)
     portfolio_service = PortfolioService(db, queue, gateway, portfolio_paths)
@@ -69,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             autopilot_state.clear_error()
 
     worker = Worker(queue)
+    worker.register("hiring_manager", hiring_manager_service.review_task)
     worker.register("application", application_service.handle_task)
     worker.register("application_revision", application_service.handle_revision_task)
     worker.register("outreach", outreach_service.handle_task)
@@ -109,6 +113,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.job_repository = job_repository
     app.state.profile_repository = profile_repository
     app.state.resume_repository = resume_repository
+    app.state.hiring_manager_service = hiring_manager_service
     app.state.application_service = application_service
     app.state.outreach_service = outreach_service
     app.state.portfolio_service = portfolio_service

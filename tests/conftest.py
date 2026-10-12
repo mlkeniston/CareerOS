@@ -23,7 +23,9 @@ class FakePlanner:
         self.calls.append(request)
         if self.result is not None:
             return self.result
-        if "portfolio" in request.task.lower():
+        if request.task.startswith("Hiring Manager reference"):
+            value = {"verdict": "pass", "findings": []}
+        elif "portfolio" in request.task.lower():
             value = {"summary": "A small starter", "files": [{"path": "README.md", "content": "generated"}]}
         else:
             snapshot = json.loads(request.task.split("(untrusted JSON data):\n", 1)[1])["snapshot"]
