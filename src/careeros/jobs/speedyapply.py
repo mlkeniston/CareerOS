@@ -12,7 +12,7 @@ import httpx
 
 from careeros.jobs.arbeitnow import normalize_kind
 from careeros.jobs.models import JobListing, JobQuery, SourceResult
-from careeros.jobs.sources import matches_query
+from careeros.jobs.sources import matches_query, SourceUnavailableError
 
 
 FILES = ("README.md", "NEW_GRAD_USA.md", "INTERN_INTL.md", "NEW_GRAD_INTL.md")
@@ -146,6 +146,7 @@ class SpeedyApplySource:
         warnings: list[str] = []
         seen: set[str] = set()
         successes = 0
+        failures = []
         for filename in FILES:
             raw_url = f"https://raw.githubusercontent.com/{self.repo}/main/{filename}"
             source_url = f"https://github.com/{self.repo}/blob/main/{filename}"
@@ -155,7 +156,8 @@ class SpeedyApplySource:
                 parsed, parse_warnings = self.parse_markdown(response.text, source_url)
                 if not parsed and not _has_empty_table(response.text):
                     raise ValueError("SpeedyApply file has no expected table")
-            except (httpx.HTTPError, ValueError):
+            except (httpx.HTTPError, ValueError) as exc:
+                failures.append(exc)
                 warnings.append(f"{filename}: feed unavailable or malformed")
                 continue
             successes += 1
@@ -165,5 +167,5 @@ class SpeedyApplySource:
                     seen.add(job.external_id)
                     jobs.append(job)
         if successes == 0:
-            raise ValueError("SpeedyApply files unavailable or malformed")
+            raise SourceUnavailableError("SpeedyApply files unavailable or malformed", failures)
         return SourceResult(jobs, warnings[:MAX_WARNINGS])

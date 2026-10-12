@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from careeros.db import Database
 from careeros.queue import now
@@ -25,6 +25,7 @@ class CareerProfile:
     target_roles: list[str] | None = None
     preferred_locations: list[str] | None = None
     skills: list[str] | None = None
+    eligibility_facts: dict[str, str] = field(default_factory=dict)
 
 
 class ProfileRepository:
@@ -37,13 +38,16 @@ class ProfileRepository:
             if row is None:
                 conn.execute("INSERT INTO profiles(id,updated_at) VALUES(1,?)", (now(),))
                 return CareerProfile(target_roles=[], preferred_locations=[], skills=[])
-        return CareerProfile(row["name"], row["summary"], json.loads(row["target_roles_json"]), json.loads(row["preferred_locations_json"]), json.loads(row["skills_json"]))
+        return CareerProfile(row["name"], row["summary"], json.loads(row["target_roles_json"]), json.loads(row["preferred_locations_json"]), json.loads(row["skills_json"]), json.loads(row["eligibility_json"]))
 
-    def update(self, name: str, summary: str, target_roles: list[str], preferred_locations: list[str], skills: list[str]) -> CareerProfile:
+    def update(self, name: str, summary: str, target_roles: list[str], preferred_locations: list[str], skills: list[str], eligibility_facts: dict[str, str] | None = None) -> CareerProfile:
+        if eligibility_facts is None:
+            eligibility_facts = self.get().eligibility_facts
+        validate_eligibility_facts(eligibility_facts)
         with self.db.connect() as conn:
-            conn.execute("""INSERT INTO profiles(id,name,summary,target_roles_json,preferred_locations_json,skills_json,updated_at) VALUES(1,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET name=excluded.name,summary=excluded.summary,target_roles_json=excluded.target_roles_json,preferred_locations_json=excluded.preferred_locations_json,skills_json=excluded.skills_json,updated_at=excluded.updated_at""",
-                         (name[:100], summary[:2000], json.dumps(target_roles[:20]), json.dumps(preferred_locations[:20]), json.dumps(skills[:20]), now()))
+            conn.execute("""INSERT INTO profiles(id,name,summary,target_roles_json,preferred_locations_json,skills_json,eligibility_json,updated_at) VALUES(1,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name,summary=excluded.summary,target_roles_json=excluded.target_roles_json,preferred_locations_json=excluded.preferred_locations_json,skills_json=excluded.skills_json,eligibility_json=excluded.eligibility_json,updated_at=excluded.updated_at""",
+                         (name[:100], summary[:2000], json.dumps(target_roles[:20]), json.dumps(preferred_locations[:20]), json.dumps(skills[:20]), json.dumps(eligibility_facts), now()))
         return self.get()
 
 
@@ -91,3 +95,15 @@ def _validate_resume(name: str, text: str) -> tuple[str, str]:
 
 def _resume(row: sqlite3.Row) -> Resume:
     return Resume(row["id"], row["name"], row["text"], row["created_at"], row["updated_at"])
+
+
+def validate_eligibility_facts(facts: dict[str, str]) -> None:
+    if not isinstance(facts, dict) or len(facts) > 20:
+        raise ValueError("Eligibility facts must contain at most 20 entries")
+    normalized_keys = [key.casefold().strip() for key in facts if isinstance(key, str)]
+    if len(normalized_keys) != len(set(normalized_keys)):
+        raise ValueError("Eligibility fact names must be unique ignoring case and surrounding spaces")
+    for key, value in facts.items():
+        if (not isinstance(key, str) or not isinstance(value, str) or not key.strip() or not value.strip()
+                or len(key) > 120 or len(value) > 500 or "\0" in key or "\0" in value):
+            raise ValueError("Eligibility fact names must be 1–120 characters and values 1–500 characters, without NUL bytes")

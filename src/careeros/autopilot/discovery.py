@@ -4,6 +4,11 @@ import hashlib
 import re
 
 from careeros.autopilot.matching import score_technology_role
+from careeros.applications.gates import evaluate_application_gates, matches_preferred_location
+from careeros.jobs.verification import EmployerPostingVerifier
+from careeros.jobs.sources import is_transient_source_error
+from careeros.workflows.errors import RetryableTaskError
+from careeros.workflows.repository import WorkflowRepository
 from careeros.jobs.models import JobQuery
 from careeros.jobs.repository import JobRepository
 from careeros.portfolio.service import PortfolioBrief
@@ -36,6 +41,7 @@ class JobDiscoveryService:
         profiles: ProfileRepository | None = None,
         resumes: ResumeRepository | None = None,
         outreach=None,
+        verifier: EmployerPostingVerifier | None = None,
     ):
         self.repository = repository
         self.sources = list(sources)
@@ -44,6 +50,8 @@ class JobDiscoveryService:
         self.profiles = profiles
         self.resumes = resumes
         self.outreach = outreach
+        self.verifier = verifier
+        self.workflows = WorkflowRepository(repository.db)
 
     def handle_task(self, task: Task) -> TaskOutcome:
         if not self.sources:
@@ -52,6 +60,7 @@ class JobDiscoveryService:
         warnings = []
         successful_sources = 0
         failed_sources = 0
+        transient_failures = 0
         for source in self.sources:
             name = _clean(getattr(source, "name", "job source"), 48)
             try:
@@ -59,24 +68,28 @@ class JobDiscoveryService:
                 jobs_found += self.repository.upsert_many(result.jobs)
                 successful_sources += 1
                 warnings.extend(f"{name}: {_clean(warning, 120)}" for warning in result.warnings)
-            except Exception:
+            except Exception as exc:
                 failed_sources += 1
+                transient_failures += int(is_transient_source_error(exc))
                 warnings.append(f"{name}: feed unavailable or malformed")
 
         if successful_sources == 0:
+            if transient_failures == len(self.sources):
+                raise RetryableTaskError("All configured job sources failed temporarily. Cached jobs remain available.")
             raise RuntimeError("All configured job sources failed; check network access. Cached jobs remain available.")
 
         jobs_matched = sum(
             1 for job in self.repository.recent(limit=500)
             if score_technology_role(job)[0] >= 70
         )
-        application_queued = self._queue_application()
+        applications_queued = self._queue_application()
         outreach_queued = self._queue_outreach()
         portfolio_queued = self._queue_portfolio()
         result = {
             "jobs_found": jobs_found,
             "jobs_matched": jobs_matched,
-            "application_queued": application_queued,
+            "application_queued": applications_queued > 0,
+            "applications_queued": applications_queued,
             "outreach_queued": outreach_queued,
             "portfolio_queued": portfolio_queued,
             "successful_sources": successful_sources,
@@ -85,28 +98,60 @@ class JobDiscoveryService:
         }
         return TaskOutcome("completed", result)
 
-    def _queue_application(self) -> bool:
-        if not all((self.applications, self.profiles, self.resumes)):
-            return False
+    def _queue_application(self) -> int:
+        if not all((self.applications, self.profiles, self.resumes, self.verifier)):
+            return 0
         profile = self.profiles.get()
-        roles = [role.strip() for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()]
-        locations = [location.strip() for location in (profile.preferred_locations or []) if isinstance(location, str) and location.strip()]
-        resume = self.resumes.most_recent() if roles else None
-        if not roles or resume is None:
-            return False
-        candidates = []
+        resume = self.resumes.most_recent()
+        queued = 0
+        seen = set()
         for job in self.repository.recent(limit=500):
-            technology_score, _ = score_technology_role(job)
-            if technology_score < 70 or not _matches_preferred_location(job, locations):
+            verification = self.verifier.verify(job.employer_url or job.url, job.company, job.title)
+            gates = evaluate_application_gates(job, profile, verification)
+            with self.repository.db.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """INSERT INTO job_verifications(job_id,status,reason,final_url,checked_at,text,fingerprint)
+                       VALUES(?,?,?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET
+                       status=excluded.status,reason=excluded.reason,final_url=excluded.final_url,
+                       checked_at=excluded.checked_at,text=excluded.text,fingerprint=excluded.fingerprint""",
+                    (job.id, verification.status, verification.reason, verification.final_url,
+                     verification.checked_at, verification.text, verification.fingerprint),
+                )
+                for gate in gates:
+                    conn.execute(
+                        """INSERT INTO job_gate_results(job_id,name,passed,reason,checked_at) VALUES(?,?,?,?,?)
+                           ON CONFLICT(job_id,name) DO UPDATE SET passed=excluded.passed,
+                           reason=excluded.reason,checked_at=excluded.checked_at""",
+                        (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at),
+                    )
+            if resume is None or not all(gate.passed for gate in gates):
                 continue
-            relevance = max((_role_overlap(job.title, role) for role in roles), default=0)
-            if relevance:
-                candidates.append((technology_score, relevance, job.published_at or "", job.title.casefold(), job))
-        if not candidates:
-            return False
-        job = max(candidates, key=lambda item: item[:4])[4]
-        fingerprint = hashlib.sha256(f"application:{job.id}:{resume.id}".encode()).hexdigest()
-        return self.applications.create_automatic(job.id, resume.id, fingerprint) is not None
+            identity = f"application:{verification.final_url}:{_normalize(job.company)}:{_normalize(job.title)}:{resume.id}"
+            fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            if queued < 10:
+                # create_automatic claims the fingerprint and queues in one BEGIN IMMEDIATE transaction.
+                created = self.applications.create_automatic(job.id, resume.id, fingerprint)
+                queued += int(created is not None)
+            # Recover a missing handoff after a crash between dispatch and event recording.
+            with self.repository.db.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                dispatch = conn.execute(
+                    "SELECT d.task_id,a.job_id,a.resume_id FROM autopilot_dispatches d "
+                    "JOIN applications a ON a.task_id=d.task_id WHERE d.fingerprint=? AND d.kind='application'",
+                    (fingerprint,),
+                ).fetchone()
+                if dispatch:
+                    self.workflows.record(
+                        conn, idempotency_key=f"eligible:{fingerprint}:{dispatch['task_id']}",
+                        task_id=dispatch['task_id'], object_type="job", object_id=dispatch["job_id"],
+                        from_worker="job_discovery", to_worker="application", event_type="application_eligible",
+                        payload={"job_id": dispatch["job_id"], "resume_id": dispatch["resume_id"], "gates_passed": True},
+                    )
+        return queued
 
     def _queue_outreach(self) -> bool:
         if not all((self.outreach, self.profiles, self.resumes)):

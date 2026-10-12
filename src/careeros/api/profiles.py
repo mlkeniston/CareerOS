@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
+
+from careeros.profiles.repository import validate_eligibility_facts
 
 router = APIRouter()
 
@@ -10,6 +12,7 @@ class ProfileInput(BaseModel):
     target_roles: list[str] = Field(default_factory=list, max_length=20)
     preferred_locations: list[str] = Field(default_factory=list, max_length=20)
     skills: list[str] = Field(default_factory=list, max_length=20)
+    eligibility_facts: dict[StrictStr, StrictStr] = Field(default_factory=dict, max_length=20)
 
 
 class ResumeInput(BaseModel):
@@ -27,7 +30,12 @@ def update_profile(payload: ProfileInput, request: Request):
     for name, values in (("target role", payload.target_roles), ("location", payload.preferred_locations), ("skill", payload.skills)):
         if any(not item.strip() or len(item) > 120 for item in values):
             raise HTTPException(422, f"Each {name} must contain 1–120 characters")
-    return request.app.state.profile_repository.update(payload.name, payload.summary, payload.target_roles, payload.preferred_locations, payload.skills)
+    try:
+        validate_eligibility_facts(payload.eligibility_facts)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    facts = payload.eligibility_facts if "eligibility_facts" in payload.model_fields_set else None
+    return request.app.state.profile_repository.update(payload.name, payload.summary, payload.target_roles, payload.preferred_locations, payload.skills, facts)
 
 
 @router.post("/api/resumes", status_code=201)

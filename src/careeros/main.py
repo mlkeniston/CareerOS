@@ -19,6 +19,7 @@ from careeros.db import Database
 from careeros.jobs.arbeitnow import ArbeitnowSource
 from careeros.jobs.boards import GreenhouseSource, LeverSource
 from careeros.jobs.repository import JobRepository
+from careeros.jobs.verification import EmployerPostingVerifier
 from careeros.jobs.speedyapply import SpeedyApplySource
 from careeros.planner.gateway import PlannerGateway
 from careeros.planner.ollama import OllamaPlanner
@@ -83,6 +84,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.stop()
         discovery_worker.stop()
         feed_client.close()
+        employer_verifier.close()
         for planner in gateway.planners.values():
             client = getattr(planner, "client", None)
             close = getattr(client, "close", None)
@@ -118,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.lever_sites:
         job_sources.append(LeverSource(feed_client, list(settings.lever_sites)))
     app.state.job_sources = job_sources
+    employer_verifier = EmployerPostingVerifier()
     job_discovery_service = JobDiscoveryService(
         job_repository,
         job_sources,
@@ -126,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profile_repository,
         resume_repository,
         outreach_service,
+        verifier=employer_verifier,
     )
     app.state.job_discovery_service = job_discovery_service
     discovery_worker.register("job_discovery", job_discovery_service.handle_task)

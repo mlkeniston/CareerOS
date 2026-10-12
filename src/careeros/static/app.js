@@ -788,6 +788,10 @@ async function loadResumeDesk() {
     form.elements.target_roles.value = (profile.target_roles || []).join(", ");
     form.elements.preferred_locations.value = (profile.preferred_locations || []).join(", ");
     form.elements.skills.value = (profile.skills || []).join(", ");
+    const facts = profile.eligibility_facts || {};
+    const eligibilityFields = ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "experience_years"];
+    eligibilityFields.forEach(key => { form.elements[key].value = facts[key] || ""; });
+    form.elements.other_eligibility.value = Object.entries(facts).filter(([key]) => !eligibilityFields.includes(key)).map(([key, value]) => `${key} = ${value}`).join("\n");
     renderResumes(resumes);
     renderApplications(applications);
     const selector = $("#prepare-form").elements.resume_id;
@@ -804,7 +808,19 @@ $("#profile-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.currentTarget;
   try {
-    await api("/api/profile", { method: "PUT", body: { name: form.elements.name.value, summary: form.elements.summary.value, target_roles: splitList(form.elements.target_roles.value), preferred_locations: splitList(form.elements.preferred_locations.value), skills: splitList(form.elements.skills.value) } });
+    const eligibilityFacts = Object.create(null);
+    ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "experience_years"].forEach(key => {
+      const value = form.elements[key].value.trim();
+      if (value) eligibilityFacts[key] = value;
+    });
+    for (const line of form.elements.other_eligibility.value.split("\n").filter(value => value.trim())) {
+      const separator = line.indexOf("=");
+      if (separator < 1 || !line.slice(separator + 1).trim()) throw new Error("Use fact = value for each other eligibility fact");
+      const key = line.slice(0, separator).trim();
+      if (Object.hasOwn(eligibilityFacts, key)) throw new Error(`Eligibility fact already provided: ${key}`);
+      eligibilityFacts[key] = line.slice(separator + 1).trim();
+    }
+    await api("/api/profile", { method: "PUT", body: { name: form.elements.name.value, summary: form.elements.summary.value, target_roles: splitList(form.elements.target_roles.value), preferred_locations: splitList(form.elements.preferred_locations.value), skills: splitList(form.elements.skills.value), eligibility_facts: eligibilityFacts } });
     notify("Profile saved on this Mac");
   } catch (error) { notify(error.message); }
 });

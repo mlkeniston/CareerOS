@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from careeros.config import Settings
 from careeros.main import create_app
+from careeros.jobs.verification import EmployerPostingVerifier
 from careeros.planner.protocols import PlannerResult
 from careeros.queue import TaskQueue
 
@@ -39,7 +41,15 @@ def app(tmp_path):
     application.state.fake_planner = fake
     application.state.gateway.planners["ollama"] = fake
     application.state.outreach_service.planner = fake
-    return application
+    # Existing app/discovery tests are offline; specific verifier tests provide
+    # matching employer text with their own transport and resolver.
+    verifier = EmployerPostingVerifier(
+        transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        resolver=lambda host, port: ["93.184.216.34"],
+    )
+    application.state.job_discovery_service.verifier = verifier
+    yield application
+    verifier.close()
 
 
 @pytest.fixture

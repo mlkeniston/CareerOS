@@ -5,7 +5,7 @@ import httpx
 
 from careeros.jobs.arbeitnow import normalize_kind, strip_html
 from careeros.jobs.models import JobListing, JobQuery, SourceResult
-from careeros.jobs.sources import matches_query
+from careeros.jobs.sources import matches_query, SourceUnavailableError
 
 
 MAX_BOARD_FETCH_WORKERS = 5
@@ -16,14 +16,14 @@ def _fetch_boards(board_ids, fetch_board) -> SourceResult:
         return SourceResult([], [])
     jobs, warnings = [], []
     successes = 0
-    failures = 0
+    failures = []
     with ThreadPoolExecutor(max_workers=min(MAX_BOARD_FETCH_WORKERS, len(board_ids))) as pool:
         futures = [(board_id, pool.submit(fetch_board, board_id)) for board_id in board_ids]
         for board_id, future in futures:
             try:
                 board_jobs, skipped = future.result()
-            except Exception:
-                failures += 1
+            except Exception as exc:
+                failures.append(exc)
                 warnings.append(f"{board_id}: feed unavailable or malformed")
                 continue
             successes += 1
@@ -31,7 +31,7 @@ def _fetch_boards(board_ids, fetch_board) -> SourceResult:
             if skipped:
                 warnings.append(f"{board_id}: skipped {skipped} malformed listing" + ("s" if skipped != 1 else ""))
     if failures and successes == 0:
-        raise ValueError("All configured employer boards returned unavailable or invalid data")
+        raise SourceUnavailableError("All configured employer boards returned unavailable or invalid data", failures)
     return SourceResult(jobs, warnings)
 
 

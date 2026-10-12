@@ -1,3 +1,5 @@
+import httpx
+
 from typing import Protocol
 
 from careeros.jobs.models import JobQuery, SourceResult
@@ -17,3 +19,22 @@ def matches_query(job, query: JobQuery) -> bool:
     if query.kind and query.kind not in {job.kind, job.original_kind.lower()}:
         return False
     return not query.remote_only or job.remote
+
+
+class SourceUnavailableError(ValueError):
+    """Keep aggregate failure causes without exposing them in user messages."""
+    def __init__(self, message: str, failures: list[Exception]):
+        super().__init__(message)
+        self.failures = tuple(failures)
+
+
+def is_transient_source_error(error: Exception) -> bool:
+    if isinstance(error, SourceUnavailableError):
+        return bool(error.failures) and all(is_transient_source_error(item) for item in error.failures)
+    if isinstance(error, httpx.TimeoutException):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        return 500 <= error.response.status_code < 600
+    if error.__cause__ is not None:
+        return is_transient_source_error(error.__cause__)
+    return False
