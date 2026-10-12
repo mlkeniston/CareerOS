@@ -25,7 +25,9 @@ from careeros.jobs.speedyapply import SpeedyApplySource
 from careeros.planner.gateway import PlannerGateway
 from careeros.planner.ollama import OllamaPlanner
 from careeros.planner.openai import OpenAIPlanner
+from careeros.portfolio.ideas import ProjectIdeaRepository, ProjectIdeaService
 from careeros.portfolio.paths import PortfolioPaths
+from careeros.portfolio.sources import ArxivProjectSource, GitHubProjectSource, HackerNewsProjectSource
 from careeros.portfolio.service import PortfolioService
 from careeros.profiles.repository import ProfileRepository, ResumeRepository
 from careeros.outreach.service import OutreachService
@@ -59,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     outreach_service = OutreachService(db, queue, outreach_planner, job_repository, profile_repository, resume_repository)
     portfolio_paths = PortfolioPaths(settings.data_dir)
     portfolio_service = PortfolioService(db, queue, gateway, portfolio_paths)
+    project_idea_repository = ProjectIdeaRepository(db)
     def tick_autopilot() -> None:
         try:
             autopilot_scheduler.maybe_enqueue_discovery()
@@ -118,6 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.outreach_service = outreach_service
     app.state.portfolio_service = portfolio_service
     app.state.portfolio_paths = portfolio_paths
+    app.state.project_idea_repository = project_idea_repository
 
     feed_client = httpx.Client(timeout=httpx.Timeout(15, connect=5), headers={"User-Agent": "CareerOS/0.1"}, trust_env=False)
     job_sources = [ArbeitnowSource(client=feed_client), SpeedyApplySource(client=feed_client)]
@@ -126,6 +130,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.lever_sites:
         job_sources.append(LeverSource(feed_client, list(settings.lever_sites)))
     app.state.job_sources = job_sources
+    project_idea_sources = [
+        GitHubProjectSource(client=feed_client),
+        HackerNewsProjectSource(client=feed_client),
+        ArxivProjectSource(client=feed_client),
+    ]
+    app.state.project_idea_sources = project_idea_sources
+    project_idea_service = ProjectIdeaService(project_idea_sources, project_idea_repository)
+    app.state.project_idea_service = project_idea_service
     employer_verifier = EmployerPostingVerifier()
     application_service.posting_verifier = employer_verifier
     job_discovery_service = JobDiscoveryService(
