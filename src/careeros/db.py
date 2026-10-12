@@ -14,6 +14,8 @@ class Database:
         with self.connect() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
             migration_dir = Path(__file__).parent / "migrations"
+            # Numbered SQL files are applied in order; new schema changes belong in
+            # the next migration so existing local databases upgrade in place.
             for migration in sorted(migration_dir.glob("[0-9][0-9][0-9]_*.sql")):
                 if conn.execute("SELECT 1 FROM schema_migrations WHERE version=?", (migration.name,)).fetchone():
                     continue
