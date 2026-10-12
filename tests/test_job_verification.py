@@ -312,3 +312,36 @@ def test_primary_requirement_links_remain_eligibility_evidence(verifier_with_moc
     gate = _gates(text=verification.text)['eligibility']
     assert not gate.passed
     assert gate.reason == 'Unknown: Must be a US citizen'
+
+
+@pytest.mark.parametrize('region', ['header', 'footer', 'aside', 'nav'])
+def test_visible_closure_outside_primary_posting_is_held(verifier_with_mock_transport, region):
+    body = f'<{region}><p>This position is closed.</p></{region}>' + '<main><h1>SWE Intern</h1><p class="company">Example</p><p>' + POSTING + '</p></main>'
+    response = httpx.Response(200, text=body, headers={'content-type': 'text/html'})
+    result = verifier_with_mock_transport(response).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'held'
+    assert 'closed' in result.reason.lower()
+    assert 'This position is closed.' in result.text
+
+
+@pytest.mark.parametrize('region', ['header', 'footer', 'aside', 'nav'])
+def test_visible_requirement_outside_primary_posting_gates_eligibility(verifier_with_mock_transport, region):
+    body = f'<{region}><p>Must be a US citizen.</p></{region}>' + '<main><h1>SWE Intern</h1><p class="company">Example</p><p>' + POSTING + '</p></main>'
+    response = httpx.Response(200, text=body, headers={'content-type': 'text/html'})
+    result = verifier_with_mock_transport(response).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'verified'
+    assert 'Must be a US citizen.' in result.text
+    gate = _gates(text=result.text)['eligibility']
+    assert not gate.passed
+    assert gate.reason == 'Unknown: Must be a US citizen'
+
+
+@pytest.mark.parametrize('region', ['script', 'style', 'template', 'noscript'])
+def test_inert_closure_and_requirements_never_become_employer_evidence(verifier_with_mock_transport, region):
+    body = f'<{region}>This position is closed. Must be a US citizen.</{region}>' + '<main><h1>SWE Intern</h1><p class="company">Example</p><p>' + POSTING + '</p></main>'
+    response = httpx.Response(200, text=body, headers={'content-type': 'text/html'})
+    result = verifier_with_mock_transport(response).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'verified'
+    assert 'closed' not in result.text
+    assert 'citizen' not in result.text
+    assert _gates(text=result.text)['eligibility'].passed

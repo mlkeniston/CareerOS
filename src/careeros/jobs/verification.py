@@ -72,7 +72,8 @@ def _safe_url(url: str) -> tuple[str, str, int]:
 
 class _Text(HTMLParser):
     """Keep posting identity separate from navigation and related-job links."""
-    _excluded = {'script', 'style', 'noscript', 'template', 'nav', 'aside', 'footer'}
+    _inert = {'script', 'style', 'noscript', 'template'}
+    _identity_excluded = {'nav', 'aside', 'footer'}
     _void = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
     _blocks = {'h1', 'h2', 'h3', 'p', 'div', 'main', 'article', 'section', 'header', 'li', 'br'}
 
@@ -92,7 +93,8 @@ class _Text(HTMLParser):
         attrs = dict(attrs)
         parent = self.stack[-1] if self.stack else {}
         annotation = ' '.join(attrs.get(key) or '' for key in ('class', 'id', 'aria-label'))
-        excluded = (parent.get('excluded', False) or tag in self._excluded
+        hidden = parent.get('hidden', False) or tag in self._inert
+        excluded = (parent.get('excluded', False) or hidden or tag in self._identity_excluded
                     or attrs.get('role') == 'navigation'
                     or bool(re.search(r'(?i)related|recommended|similar[-_ ]jobs', annotation)))
         scope = parent.get('scope')
@@ -100,12 +102,12 @@ class _Text(HTMLParser):
             self._next_scope += 1
             scope = self._next_scope
             self.scope_kinds[scope] = tag
-        if tag in self._blocks and not excluded:
+        if tag in self._blocks and not hidden:
             self._append('\n')
         if tag not in self._void:
             if len(self.stack) >= 64:
                 raise ValueError('Employer HTML nesting is too deep')
-            self.stack.append({'tag': tag, 'attrs': attrs, 'excluded': excluded,
+            self.stack.append({'tag': tag, 'attrs': attrs, 'excluded': excluded, 'hidden': hidden,
                                'anchor': parent.get('anchor', False) or tag == 'a',
                                'scope': scope, 'parts': [], 'plain': []})
 
@@ -120,9 +122,13 @@ class _Text(HTMLParser):
 
     def _append(self, data):
         parent = self.stack[-1] if self.stack else {}
+        if parent.get('hidden', False):
+            return
+        # Evidence covers the full visible page, including links and notices
+        # outside the posting. Only identity candidates use the narrower filter.
+        self.full_parts.append(data)
         if parent.get('excluded', False):
             return
-        self.full_parts.append(data)
         if not parent.get('anchor', False):
             self.parts.append(data)
         for frame in self.stack:
@@ -151,7 +157,7 @@ class _Text(HTMLParser):
         if tag == 'p' and plain.strip():
             self.paragraphs.append((scope, ' '.join(plain.split())))
         if tag in {'main', 'article'} and scope in self.scope_kinds:
-            self.scopes.append((scope, plain, ''.join(frame['parts'])))
+            self.scopes.append((scope, plain))
 
     def finish(self):
         while self.stack:
@@ -162,15 +168,15 @@ class _Text(HTMLParser):
         if not scopes:
             scopes = list(self.scope_kinds)
         if len(scopes) > 1:
-            return None, [], [], [], ''
+            return None, [], [], [], ''.join(self.full_parts)
         scope = scopes[0] if scopes else None
         # The outer main/article is finalized last for each scope.
-        parts = [(plain, full) for candidate, plain, full in self.scopes if candidate == scope]
-        text, full = parts[-1] if parts else (''.join(self.parts), ''.join(self.full_parts))
+        parts = [plain for candidate, plain in self.scopes if candidate == scope]
+        text = parts[-1] if parts else ''.join(self.parts)
         select = lambda values: [value for candidate, value in values if candidate == scope]
         # Visible posting headers may sit just outside main; conflicting identity
         # there cannot be overridden by expected words later in the body.
-        return text, [value for _, value in self.headings], [value for _, value in self.companies], select(self.paragraphs), full
+        return text, [value for _, value in self.headings], [value for _, value in self.companies], select(self.paragraphs), ''.join(self.full_parts)
 
 
 def _normalize(value: str) -> str:
@@ -269,11 +275,11 @@ class EmployerPostingVerifier:
                     parser.close()
                     parser.finish()
                     identity_text, headings, companies, paragraphs, raw = parser.primary()
-                    if identity_text is None:
-                        return held('Employer page has ambiguous primary postings', fingerprint=fingerprint)
                 text = '\n'.join(' '.join(line.split()) for line in raw.splitlines() if line.strip())
                 if re.search(r'(?i)\b((?:position|job|role|listing|posting)(?: posting| listing)? (?:is |has been |has )?(?:closed|expired|filled)|no longer (?:accepting applications|available)|applications? (?:are |is )?closed|position (?:has been |is )?filled)\b', text):
                     return held('Employer listing is closed or expired', text, fingerprint)
+                if identity_text is None:
+                    return held('Employer page has ambiguous primary postings', text, fingerprint)
                 if not _primary_matches(identity_text, headings, companies, paragraphs, expected_company, expected_title):
                     return held('Employer primary posting does not match the company and role', text, fingerprint)
                 return VerificationResult('verified', 'Employer primary company and role match', sanitized, stamp, text, fingerprint)

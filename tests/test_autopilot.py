@@ -398,3 +398,38 @@ def test_same_employer_role_from_two_sources_queues_once_and_recovers_handoff(cl
     with app.state.db.connect() as conn:
         row = conn.execute('SELECT object_id FROM workflow_handoffs').fetchone()
         assert row['object_id'] == application.job_id
+
+
+@pytest.mark.parametrize('notice,status,gate_name,reason', [
+    ('This position is closed.', 'held', 'verified', 'closed'),
+    ('Must be a US citizen.', 'verified', 'eligibility', 'Unknown: Must be a US citizen'),
+])
+def test_discovery_persists_header_notice_and_holds_preparation(client, notice, status, gate_name, reason):
+    app = client.app
+    app.state.profile_repository.update('', '', ['Software Engineer'], [], [])
+    app.state.resume_repository.create('Current', 'Python APIs')
+    job = _job('Software Engineer Intern', 'internship', 'Source feed text stays separate')
+    app.state.job_discovery_service.sources = [_Source('fixture', SourceResult([job], []))]
+    body = ('<header><p>' + notice + '</p></header><main><h1>Software Engineer Intern</h1>'
+            '<p class="company">Acme</p><p>Build Python services with our engineering team and maintain APIs. '
+            'Collaborate with mentors, review code, document features, and deliver useful software to customers '
+            'using careful implementation and thoughtful design.</p></main>')
+    verifier = EmployerPostingVerifier(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body, headers={'content-type': 'text/html'})),
+        resolver=lambda host, port: ['93.184.216.34'],
+    )
+    app.state.job_discovery_service.verifier = verifier
+    try:
+        assert _run_discovery(client).result['applications_queued'] == 0
+        assert _task_count(client, 'application') == 0
+        with app.state.db.connect() as conn:
+            verification = conn.execute('SELECT status,text FROM job_verifications').fetchone()
+            assert verification['status'] == status
+            assert notice in verification['text']
+            gate = conn.execute('SELECT passed,reason FROM job_gate_results WHERE name=?', (gate_name,)).fetchone()
+            assert gate['passed'] == 0
+            assert reason in gate['reason']
+        saved_job = app.state.job_repository.recent()[0]
+        assert saved_job.description == 'Source feed text stays separate'
+    finally:
+        verifier.close()
