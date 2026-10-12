@@ -38,7 +38,7 @@
 **Files:**
 - Create: `src/careeros/portfolio/ideas.py`
 - Create: `src/careeros/portfolio/sources.py`
-- Create: `src/careeros/migrations/014_project_ideas.sql`
+- Create: `src/careeros/migrations/015_project_ideas.sql`
 - Modify: `src/careeros/main.py`
 - Create: `tests/test_project_sources.py`
 
@@ -74,7 +74,7 @@ Expected: PASS for source normalization, bounded requests, cached records surviv
 - [ ] **Step 6: Commit only this task's files.**
 
 ```bash
-git add src/careeros/portfolio/ideas.py src/careeros/portfolio/sources.py src/careeros/migrations/014_project_ideas.sql src/careeros/main.py tests/test_project_sources.py
+git add src/careeros/portfolio/ideas.py src/careeros/portfolio/sources.py src/careeros/migrations/015_project_ideas.sql src/careeros/main.py tests/test_project_sources.py
 git commit -m "feat: collect cited portfolio project ideas"
 ```
 
@@ -85,7 +85,7 @@ git commit -m "feat: collect cited portfolio project ideas"
 - Create: `src/careeros/portfolio/engineering.py`
 - Modify: `src/careeros/autopilot/discovery.py`
 - Modify: `src/careeros/main.py`
-- Create: `src/careeros/migrations/015_project_builds.sql`
+- Create: `src/careeros/migrations/016_project_builds.sql`
 - Modify: `tests/test_portfolio.py`, `tests/test_autopilot.py`
 
 **Interfaces:**
@@ -113,7 +113,7 @@ Expected: FAIL because autonomous idea selection and source provenance are missi
 
 - [ ] **Step 3: Add deterministic idea scoring and an idempotent autonomous enqueue.** Rank by overlap with recurring skills from verified role listings, age, and novelty; do not use one model score as a gate. Queue at most one new project per discovery cycle and never duplicate a project with a queued, running, needs-review, approved, or quality-held state. Persist source URLs, a concise original brief, provider=`ollama`, and `cloud_confirmed=False` in the enqueue transaction.
 
-- [ ] **Step 4: Generate a constrained project bundle.** Migration 015 adds project manifest/source fields to proposals; leave migration 014 immutable. Ask Ollama for strict JSON with `summary`, `manifest`, and UTF-8 text files. Convert local `ProviderUnavailable` into `RetryableTaskError` without marking the proposal failed; invalid model JSON remains non-retryable. Support Python standard library, Node built-ins, or static HTML/CSS/JS only; do not include package-install commands, dependency manifests that install scripts, secrets, binaries, or shell scripts. Reuse `PortfolioPaths` traversal/symlink/size checks and cap each file at 200 KB, total bundle at 1 MB, and 30 files. Write to a fresh per-project staging path, never to `data/portfolio`.
+- [ ] **Step 4: Generate a constrained project bundle.** Migration 016 adds project manifest/source fields to proposals; leave earlier migrations immutable. Ask Ollama for strict JSON with `summary`, `manifest`, and UTF-8 text files. Convert local `ProviderUnavailable` into `RetryableTaskError` without marking the proposal failed; invalid model JSON remains non-retryable. Support Python standard library, Node built-ins, or static HTML/CSS/JS only; do not include package-install commands, dependency manifests that install scripts, secrets, binaries, or shell scripts. Reuse `PortfolioPaths` traversal/symlink/size checks and cap each file at 200 KB, total bundle at 1 MB, and 30 files. Write to a fresh per-project staging path, never to `data/portfolio`.
 
 - [ ] **Step 5: Remove per-task project instructions from the primary UI.** Replace the always-visible project-brief form with compact status for autonomous Engineering and a Needs your review list; no project input is required for work to start. Keep any legacy manual API disabled from the main office flow and never require the user to create an idea.
 
@@ -125,7 +125,7 @@ Expected: PASS for sourced autonomous dispatch, deduplication, safe staged bundl
 - [ ] **Step 7: Commit only this task's files.**
 
 ```bash
-git add src/careeros/portfolio/service.py src/careeros/portfolio/engineering.py src/careeros/autopilot/discovery.py src/careeros/main.py src/careeros/migrations/015_project_builds.sql src/careeros/static/index.html src/careeros/static/app.js tests/test_portfolio.py tests/test_autopilot.py
+git add src/careeros/portfolio/service.py src/careeros/portfolio/engineering.py src/careeros/autopilot/discovery.py src/careeros/main.py src/careeros/migrations/016_project_builds.sql src/careeros/static/index.html src/careeros/static/app.js tests/test_portfolio.py tests/test_autopilot.py
 git commit -m "feat: build sourced portfolio projects autonomously"
 ```
 
@@ -181,7 +181,7 @@ git commit -m "feat: isolate project quality checks"
 
 **Files:**
 - Create: `src/careeros/portfolio/qa.py`
-- Create: `src/careeros/migrations/016_project_qa.sql`
+- Create: `src/careeros/migrations/017_project_qa.sql`
 - Modify: `src/careeros/portfolio/service.py`
 - Modify: `src/careeros/main.py`
 - Modify: `src/careeros/api/portfolio.py`
@@ -189,7 +189,7 @@ git commit -m "feat: isolate project quality checks"
 
 **Interfaces:**
 - Produces: `ProjectQAService.run_task(task: Task) -> TaskOutcome` and `enqueue(proposal_id: str, cycle: int) -> str`.
-- Produces: persisted `project_qa_runs(proposal_id, cycle, status, deterministic_report_json, critique_json, provider, model, created_at)` unique by `(proposal_id,cycle)`; `status` is `passed`, `revise`, or `quality_hold`. Migration 016 creates the report table and extends the proposal status constraint through a data-preserving SQLite table rebuild; leave migrations 014 and 015 immutable.
+- Produces: persisted `project_qa_runs(proposal_id, cycle, status, deterministic_report_json, critique_json, provider, model, created_at)` unique by `(proposal_id,cycle)`; `status` is `passed`, `revise`, or `quality_hold`. Migration 017 creates the report table and extends the proposal status constraint through a data-preserving SQLite table rebuild; leave migrations 014–016 immutable.
 - Consumes: `DockerSandboxRunner`, proposal manifest/source trail, shared task queue and handoff repository.
 
 - [ ] **Step 1: Define `project_pipeline`** in `tests/test_project_qa.py` from existing `app`, `db`, `fake_planner`, and `client` fixtures, injecting a fake sandbox. Define `proposal_after_failed_cycles(3)` to execute three stored QA cycles and their revision tasks. Then cover passing tests plus no blockers, nonzero test plus concrete findings, Docker unavailable, timeout/limit breach, malformed reviewer JSON, repair returning to Engineering, cycle 3 failure, and idempotent re-run of a persisted QA cycle.
@@ -223,7 +223,7 @@ Expected: PASS for deterministic and model QA, 3-cycle hold, report persistence,
 - [ ] **Step 7: Commit only this task's files.**
 
 ```bash
-git add src/careeros/portfolio/qa.py src/careeros/migrations/016_project_qa.sql src/careeros/portfolio/service.py src/careeros/main.py src/careeros/api/portfolio.py tests/test_project_qa.py tests/test_portfolio.py tests/test_worker.py
+git add src/careeros/portfolio/qa.py src/careeros/migrations/017_project_qa.sql src/careeros/portfolio/service.py src/careeros/main.py src/careeros/api/portfolio.py tests/test_project_qa.py tests/test_portfolio.py tests/test_worker.py
 git commit -m "feat: review portfolio projects with independent QA"
 ```
 
