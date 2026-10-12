@@ -104,11 +104,29 @@ def _supported_wording(claim: str, quote: str) -> bool:
     return claim == 'i ' + quote and bool(re.match(r'(?:' + actions + r')\b', quote))
 
 
+def _claim_statements(value: str) -> list[str]:
+    # Normalize wrapping before splitting statements. A claim's formatting can
+    # never turn its qualifier and assertion into separately supported facts.
+    return [statement for part in re.split(r'(?<=[.!?;])\s+', normalize_quote(value))
+            if (statement := part.rstrip('.!?;')) and re.search(r'\w', statement)]
+
+
 def _material_statements(value: str) -> list[str]:
-    # Split before whitespace normalization so explicit output lines remain
-    # separate statements. Decimal punctuation without whitespace is a token.
-    return [normalized for part in re.split(r'\n+|(?<=[.!?;])\s+', unicodedata.normalize('NFKC', value))
-            if (normalized := normalize_quote(part).rstrip('.!?;')) and re.search(r'\w', normalized)]
+    # Unordered bullets delimit output statements; ordinary line breaks are
+    # wrapping within a statement. Bullet continuation lines stay together.
+    groups = re.split(r'(?m)^[ \t]*[-*•][ \t]+', unicodedata.normalize('NFKC', value))
+    return [statement for group in groups for statement in _claim_statements(group)]
+
+
+def _complete_coverage(output: list[str], supported_spans: list[list[str]]) -> bool:
+    reachable = {0}
+    for index in range(len(output)):
+        if index not in reachable:
+            continue
+        for span in supported_spans:
+            if output[index:index + len(span)] == span:
+                reachable.add(index + len(span))
+    return len(output) in reachable
 
 
 def _contains_statements(output: list[str], claim: list[str]) -> bool:
@@ -130,7 +148,8 @@ def validate_claims(draft: ApplicationDraft, evidence_snapshot: dict[str, Eviden
     issues = []
     materials = [('resume_text', draft.resume_text), ('cover_letter', draft.cover_letter), *draft.answers.items()]
     output_statements = [_material_statements(value) for _, value in materials]
-    supported_statements = set()
+    supported_spans = []
+    supported_full_fields = set()
     supported_numbers = set()
     for claim in draft.claims:
         issue_count = len(issues)
@@ -171,16 +190,19 @@ def validate_claims(draft: ApplicationDraft, evidence_snapshot: dict[str, Eviden
         supporting = anchors or [normalize_quote(item.text) for item in sources if item.attested and item.category == 'profile']
         if not any(_supported_wording(normalized, quote) for quote in supporting):
             issues.append(ClaimIssue(claim.claim_id, 'Claim text is not supported by its candidate quote anchors'))
-        statements = _material_statements(claim.text)
-        if not any(_contains_statements(output, statements) for output in output_statements):
+        statements = _claim_statements(claim.text)
+        if not any(_contains_statements(output, statements) or normalize_quote(value) == normalized
+                   for (_, value), output in zip(materials, output_statements)):
             issues.append(ClaimIssue(claim.claim_id, 'Claim text is absent as complete statements from application materials'))
         if len(issues) == issue_count:
-            supported_statements.update(statements)
+            supported_spans.append(statements)
+            supported_full_fields.add(normalized)
             supported_numbers.update(numbers)
-    # Check whole output statements, never delete substrings from a mutable
-    # remainder. Two supported claims cannot join into a different fact/token.
+    # Cover each field using complete claim spans. Neither line wrapping nor
+    # sentence boundaries authorize independent fragments from a larger claim.
+    # Two supported claims cannot join into a different fact/token.
     for (label, value), statements in zip(materials, output_statements):
-        if any(statement not in supported_statements for statement in statements):
+        if normalize_quote(value) not in supported_full_fields and not _complete_coverage(statements, supported_spans):
             issues.append(ClaimIssue(label, 'Application material contains untraced text; link every complete statement to candidate evidence'))
         if not _numbers(normalize_quote(value)) <= supported_numbers:
             issues.append(ClaimIssue(label, 'Application material contains unsupported numeric output'))

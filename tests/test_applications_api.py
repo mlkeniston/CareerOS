@@ -137,3 +137,21 @@ def test_revision_preview_binds_selected_provider_and_findings(client):
     changed = client.post(route, json={'provider': 'openai', 'findings': [{'issue': 'New finding'}]}).json()
     assert first['preview_token'] != second['preview_token']
     assert first['preview_token'] != changed['preview_token']
+
+
+def test_manual_edit_rejects_line_wrap_qualifier_bypass(client):
+    inputs = application_inputs(client)
+    client.put(f"/api/resumes/{inputs['resume_id']}", json={'name': 'Base', 'text': 'Not fluent in Python'})
+    started = client.post('/api/applications', json=inputs).json()
+    client.app.state.worker.run_once()
+    route = f"/api/applications/{started['id']}"
+    before = client.get(route).json()
+    draft = {'resume_text': 'Not\nfluent in Python', 'cover_letter': 'fluent in Python',
+             'answers': {'Skill': 'fluent in Python'}, 'next_steps': [],
+             'claims': [{'claim_id': 'c1', 'text': 'Not\nfluent in Python', 'evidence_ids': ['resume:1'],
+                         'quote_anchors': ['Not fluent in Python']}]}
+    response = client.put(route + '/draft', json=draft)
+    assert response.status_code == 409
+    after = client.get(route).json()
+    assert after['draft'] == before['draft']
+    assert after['draft_version'] == before['draft_version']

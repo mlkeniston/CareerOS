@@ -467,3 +467,39 @@ def test_paid_revision_refuses_changed_model_after_preview(client, fake_planner)
     assert client.app.state.queue.get(task_id).available_at is None
     assert 'preview' in client.app.state.queue.get(task_id).error.lower()
     assert service.get(app.id).draft_version == saved.draft_version
+
+
+def test_claim_line_wrap_cannot_authorize_qualified_fragment_in_other_fields():
+    from careeros.applications.models import ApplicationDraft, ClaimEvidence, EvidenceItem, validate_claims
+    evidence = {'resume:1': EvidenceItem('resume:1', 'resume', 'Not fluent in Python')}
+    claim = ClaimEvidence('c1', 'Not\nfluent in Python', ['resume:1'], ['Not fluent in Python'])
+    draft = ApplicationDraft('Not\nfluent in Python', 'fluent in Python', {'Skill': 'fluent in Python'}, [claim], [])
+    issues = validate_claims(draft, evidence)
+    assert any(issue.claim_id == 'cover_letter' for issue in issues)
+    assert any(issue.claim_id == 'Skill' for issue in issues)
+
+
+def test_qualified_claim_allows_normal_line_wrapping_without_losing_qualifier():
+    from careeros.applications.models import ApplicationDraft, ClaimEvidence, EvidenceItem, validate_claims
+    evidence = {'resume:1': EvidenceItem('resume:1', 'resume', 'Not fluent in Python')}
+    claim = ClaimEvidence('c1', 'Not\nfluent in Python', ['resume:1'], ['Not fluent in Python'])
+    draft = ApplicationDraft('Not\nfluent in Python', 'Not fluent\nin Python', {'Skill': 'Not fluent in Python'}, [claim], [])
+    assert validate_claims(draft, evidence) == []
+
+
+def test_complete_claims_allow_bullets_and_wrapped_lines():
+    from careeros.applications.models import ApplicationDraft, ClaimEvidence, EvidenceItem, validate_claims
+    evidence = {'resume:1': EvidenceItem('resume:1', 'resume', 'Built a Python API. Used SQL for reporting.')}
+    claims = [ClaimEvidence('c1', 'Built a Python API', ['resume:1'], ['Built a Python API']),
+              ClaimEvidence('c2', 'Used SQL for reporting', ['resume:1'], ['Used SQL for reporting'])]
+    draft = ApplicationDraft('- Built a Python\n  API\n- Used SQL for reporting', 'Built a Python API.', {}, claims, [])
+    assert validate_claims(draft, evidence) == []
+
+
+def test_multisentence_claim_cannot_authorize_just_one_qualified_sentence():
+    from careeros.applications.models import ApplicationDraft, ClaimEvidence, EvidenceItem, validate_claims
+    source = 'In a simulation only. Led a team of 10.'
+    evidence = {'resume:1': EvidenceItem('resume:1', 'resume', source)}
+    claim = ClaimEvidence('c1', source, ['resume:1'], [source])
+    draft = ApplicationDraft(source, 'Led a team of 10.', {}, [claim], [])
+    assert any(issue.claim_id == 'cover_letter' for issue in validate_claims(draft, evidence))
