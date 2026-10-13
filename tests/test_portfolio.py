@@ -237,3 +237,101 @@ def test_project_text_is_user_data_beneath_system_safeguards(client, fake_planne
 
 def test_ui_renders_dynamic_content_as_text(client):
     assert "textContent" in client.get("/static/app.js").text
+
+
+def test_engineering_queues_one_original_project_from_cited_idea(client):
+    from careeros.portfolio.ideas import ProjectIdea
+    from careeros.portfolio.engineering import ProjectEngineeringService
+
+    service = ProjectEngineeringService(client.app.state.db, client.app.state.queue, client.app.state.gateway,
+                                        client.app.state.portfolio_paths, client.app.state.portfolio_service)
+    idea = ProjectIdea("idea-1", "Python observability", "A small trace viewer", ["Python"], ["https://github.com/example/research"], None)
+    task_id, proposal_id = service.create_from_ideas([idea], ["Python"])
+    proposal = client.app.state.portfolio_service.get(proposal_id)
+    assert task_id
+    assert proposal["source_urls"] == ["https://github.com/example/research"]
+    assert service.create_from_ideas([idea], ["Python"]) is None
+    assert proposal["status"] == "preparing"
+    new_idea = ProjectIdea("idea-1b", "Python job tracker", "A tracker", ["Python"], ["https://github.com/example/tracker"], None)
+    assert service.create_from_ideas([new_idea], ["Python"]) is not None
+
+
+def test_engineering_requires_market_overlap(client):
+    from careeros.portfolio.ideas import ProjectIdea
+    from careeros.portfolio.engineering import ProjectEngineeringService
+
+    service = ProjectEngineeringService(client.app.state.db, client.app.state.queue, client.app.state.gateway,
+                                        client.app.state.portfolio_paths, client.app.state.portfolio_service)
+    idea = ProjectIdea("idea-2", "Rust kernel", "A kernel", ["Rust"], ["https://example.org/kernel"], None)
+    assert service.create_from_ideas([idea], ["Python"]) is None
+
+
+def test_project_manifest_bundle_is_staged_and_not_reviewable(client, fake_planner):
+    import json
+    from careeros.planner.protocols import PlannerResult
+    from careeros.portfolio.ideas import ProjectIdea
+    from careeros.portfolio.engineering import ProjectEngineeringService
+
+    service = ProjectEngineeringService(client.app.state.db, client.app.state.queue, client.app.state.gateway,
+                                        client.app.state.portfolio_paths, client.app.state.portfolio_service)
+    idea = ProjectIdea("idea-3", "Python observability", "A trace viewer", ["Python"], ["https://example.org/trace"], None)
+    task_id, proposal_id = service.create_from_ideas([idea], ["Python"])
+    fake_planner.result = PlannerResult(json.dumps({
+        "summary": "Tiny trace viewer",
+        "manifest": {"runtime": "python", "test_files": ["test_app.py"], "expected_behavior": ["parses spans"], "source_urls": ["https://example.org/trace"]},
+        "files": [{"path": "app.py", "content": "print('hi')"}, {"path": "test_app.py", "content": "# test"}],
+    }))
+    task = client.app.state.queue.claim_next({"project_engineering"})
+    outcome = service.handle_task(task)
+    proposal = client.app.state.portfolio_service.get(proposal_id)
+    assert outcome.status == "completed"
+    assert proposal["status"] == "preparing"  # QA Task 4 must gate review.
+    assert proposal["manifest"]["runtime"] == "python"
+    stage = client.app.state.portfolio_paths.proposal_dir(proposal_id)
+    assert (stage / "app.py").read_text() == "print('hi')"
+    assert not (client.app.state.settings.data_dir / "portfolio" / proposal["project_id"] / "app.py").exists()
+    client.app.state.queue.finish(task_id, outcome.result, outcome.status)
+    assert client.app.state.queue.get(task_id).status == "completed"
+
+
+def test_project_manifest_rejects_traversal_paths(client, fake_planner):
+    import json
+    from careeros.planner.protocols import PlannerResult
+    from careeros.portfolio.ideas import ProjectIdea
+    from careeros.portfolio.engineering import ProjectEngineeringService
+
+    service = ProjectEngineeringService(client.app.state.db, client.app.state.queue, client.app.state.gateway,
+                                        client.app.state.portfolio_paths, client.app.state.portfolio_service)
+    idea = ProjectIdea("idea-4", "Python observability", "A trace viewer", ["Python"], ["https://example.org/trace"], None)
+    _, _proposal_id = service.create_from_ideas([idea], ["Python"])
+    fake_planner.result = PlannerResult(json.dumps({
+        "summary": "unsafe", "manifest": {"runtime": "python", "test_files": ["../bad.py"], "expected_behavior": ["bad"], "source_urls": ["https://example.org/trace"]},
+        "files": [{"path": "../bad.py", "content": "bad"}],
+    }))
+    task = client.app.state.queue.claim_next({"project_engineering"})
+    with pytest.raises(Exception):
+        service.handle_task(task)
+
+
+def test_unavailable_local_model_retries_without_cloud_fallback(client, fake_planner):
+    from careeros.planner.gateway import ProviderUnavailable
+    from careeros.portfolio.ideas import ProjectIdea
+    from careeros.portfolio.engineering import ProjectEngineeringService
+    from careeros.workflows.errors import RetryableTaskError
+
+    service = ProjectEngineeringService(client.app.state.db, client.app.state.queue, client.app.state.gateway,
+                                        client.app.state.portfolio_paths, client.app.state.portfolio_service)
+    idea = ProjectIdea("idea-5", "Python observability", "A trace viewer", ["Python"], ["https://example.org/trace"], None)
+    task_id, _ = service.create_from_ideas([idea], ["Python"])
+    task = client.app.state.queue.claim_next({"project_engineering"})
+    fake_planner.generate = lambda request: (_ for _ in ()).throw(ProviderUnavailable("offline"))
+    with pytest.raises(RetryableTaskError):
+        service.handle_task(task)
+    queued = client.app.state.queue.get(task_id)
+    assert queued.provider == "ollama"
+    assert queued.cloud_confirmed is False
+    assert queued.status == "running"  # Worker owns retry state transitions.
+
+
+def test_project_brief_form_is_removed_for_autonomous_engineering(client):
+    assert 'id="portfolio-brief"' not in client.get("/").text

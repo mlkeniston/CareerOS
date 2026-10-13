@@ -1114,27 +1114,6 @@ async function retryApplication(application) {
   } catch (error) { notify(error.message); }
 }
 
-$("#portfolio-brief").addEventListener("submit", async event => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const provider = form.elements.provider.value;
-  let confirmCloud = false;
-  try {
-    const brief = { project_id: form.elements.project_id.value, title: form.elements.title.value, description: form.elements.description.value };
-    let previewToken = null;
-    if (provider === "openai") {
-      const preview = await api("/api/portfolio/preview", { method: "POST", body: brief });
-      confirmCloud = await askCloud(preview.sent_data);
-      if (!confirmCloud) return;
-      previewToken = preview.preview_token;
-    }
-    const created = await api("/api/portfolio/proposals", { method: "POST", body: { ...brief, provider, confirm_cloud: confirmCloud, preview_token: previewToken } });
-    notify("Proposal queued for review");
-    await pollProposal(created.proposal_id);
-    await loadProposals();
-  } catch (error) { notify(error.message); }
-});
-
 $("#reload-proposals").addEventListener("click", loadProposals);
 
 async function loadProposals() {

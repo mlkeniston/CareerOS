@@ -26,6 +26,7 @@ from careeros.planner.gateway import PlannerGateway
 from careeros.planner.ollama import OllamaPlanner
 from careeros.planner.openai import OpenAIPlanner
 from careeros.portfolio.ideas import ProjectIdeaRepository, ProjectIdeaService
+from careeros.portfolio.engineering import ProjectEngineeringService
 from careeros.portfolio.paths import PortfolioPaths
 from careeros.portfolio.sources import ArxivProjectSource, GitHubProjectSource, HackerNewsProjectSource
 from careeros.portfolio.service import PortfolioService
@@ -138,6 +139,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.project_idea_sources = project_idea_sources
     project_idea_service = ProjectIdeaService(project_idea_sources, project_idea_repository)
     app.state.project_idea_service = project_idea_service
+    project_engineering_service = ProjectEngineeringService(db, queue, gateway, portfolio_paths, portfolio_service)
+    app.state.project_engineering_service = project_engineering_service
+    worker.register("project_engineering", project_engineering_service.handle_task)
+    worker.register("project_revision", project_engineering_service.handle_revision_task)
     employer_verifier = EmployerPostingVerifier()
     application_service.posting_verifier = employer_verifier
     job_discovery_service = JobDiscoveryService(
@@ -149,6 +154,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resume_repository,
         outreach_service,
         verifier=employer_verifier,
+        project_ideas=project_idea_service,
+        project_engineering=project_engineering_service,
     )
     app.state.job_discovery_service = job_discovery_service
     discovery_worker.register("job_discovery", job_discovery_service.handle_task)

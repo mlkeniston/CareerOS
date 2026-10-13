@@ -327,7 +327,8 @@ class PortfolioService:
 
 def _proposal(row: sqlite3.Row) -> dict:
     files = json.loads(row["files_json"])
-    return {"id": row["id"], "project_id": row["project_id"], "task_id": row["task_id"], "status": row["status"], "title": row["title"], "summary": row["summary"], "files": files, "updated_at": row["updated_at"]}
+    keys = set(row.keys())
+    return {"id": row["id"], "project_id": row["project_id"], "task_id": row["task_id"], "status": row["status"], "title": row["title"], "summary": row["summary"], "files": files, "updated_at": row["updated_at"], "source_urls": json.loads(row["source_urls_json"]) if "source_urls_json" in keys else [], "manifest": json.loads(row["manifest_json"]) if "manifest_json" in keys else {}}
 
 
 def _snapshot_token(snapshot: dict) -> str:
