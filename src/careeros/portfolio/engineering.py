@@ -108,7 +108,11 @@ class ProjectEngineeringService:
             "Use Python standard library, Node built-ins, or static HTML/CSS/JS only. No dependencies, install scripts, shell scripts, "
             "binaries, secrets, package manifests, network calls, or copied source project code. Files must be UTF-8 text."
         )
-        request = PlannerRequest(json.dumps({"project": task.payload, "revision": task.payload.get("findings", [])}, ensure_ascii=False), instruction)
+        request = PlannerRequest(
+            json.dumps({"project": task.payload, "revision": task.payload.get("findings", [])}, ensure_ascii=False),
+            instruction,
+            response_schema=_project_bundle_schema(),
+        )
         try:
             result = self.gateway.generate("ollama", request, False)
         except ProviderUnavailable as exc:
@@ -214,6 +218,39 @@ def _validate_manifest(raw: object, source_urls: list[str]) -> ProjectManifest:
     if not urls or any(url not in canonical for url in urls):
         raise ValueError("Manifest source citations must come from retained idea sources")
     return ProjectManifest(runtime, tests, behaviors, urls)
+
+
+def _project_bundle_schema() -> dict:
+    return {
+        "type": "object",
+        "required": ["summary", "manifest", "files"],
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "manifest": {
+                "type": "object",
+                "required": ["runtime", "test_files", "expected_behavior", "source_urls"],
+                "additionalProperties": False,
+                "properties": {
+                    "runtime": {"type": "string", "enum": ["python", "node", "static"]},
+                    "test_files": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string"}},
+                    "expected_behavior": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string"}},
+                    "source_urls": {"type": "array", "minItems": 1, "maxItems": 10, "items": {"type": "string"}},
+                },
+            },
+            "files": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 30,
+                "items": {
+                    "type": "object",
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                },
+            },
+        },
+    }
 
 
 def _skills(values: list[str]) -> set[str]:

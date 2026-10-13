@@ -72,6 +72,7 @@ def test_sandbox_pass_plus_independent_critique_makes_project_reviewable(client)
 
     proposal = app.state.portfolio_service.get(proposal_id)
     assert proposal["status"] == "needs_review", [(t.kind, t.status, t.error) for t in app.state.queue.list()]
+    assert requests[0].response_schema["required"] == ["summary", "manifest", "files"]
     assert app.state.project_qa_service.latest(proposal_id).status == "passed"
     qa_worker = next(item for item in client.get("/api/workspace").json()["workers"] if item["id"] == "project-qa")
     assert qa_worker["gender"] == "male"

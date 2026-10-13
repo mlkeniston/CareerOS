@@ -80,6 +80,46 @@ def test_ollama_health_checks_tags_without_generating_text():
     client.close()
 
 
+def test_ollama_generate_requests_json_output_for_structured_local_work():
+    observed = []
+
+    def handler(request):
+        observed.append(request)
+        return httpx.Response(200, json={"message": {"content": json.dumps({"ok": True})}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    planner = OllamaPlanner("http://127.0.0.1:11434", "qwen2.5:1.5b")
+    planner.client.close()
+    planner.client = client
+
+    result = planner.generate(PlannerRequest("make a JSON object", "Return strict JSON."))
+
+    body = json.loads(observed[0].content)
+    assert body["format"] == "json"
+    assert body["stream"] is False
+    assert json.loads(result.text) == {"ok": True}
+    client.close()
+
+
+def test_ollama_generate_uses_requested_json_schema():
+    observed = []
+    schema = {"type": "object", "required": ["summary", "manifest", "files"]}
+
+    def handler(request):
+        observed.append(request)
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    planner = OllamaPlanner("http://127.0.0.1:11434", "qwen2.5:1.5b")
+    planner.client.close()
+    planner.client = client
+
+    planner.generate(PlannerRequest("build a project", "Return a project bundle.", response_schema=schema))
+
+    assert json.loads(observed[0].content)["format"] == schema
+    client.close()
+
+
 def test_ollama_health_distinguishes_missing_model_from_offline_server():
     missing_client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"models": []})))
     missing = OllamaPlanner("http://127.0.0.1:11434", "qwen2.5:1.5b")

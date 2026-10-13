@@ -15,6 +15,7 @@ class OllamaPlanner:
         response = self.client.post(self.base_url + "/api/chat", json={
             "model": self.model,
             "stream": False,
+            "format": request.response_schema or "json",
             "messages": [{"role": "system", "content": request.instruction}, {"role": "user", "content": "Return only the requested result for task: " + request.task}],
         })
         try:

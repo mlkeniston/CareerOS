@@ -6,6 +6,7 @@ from typing import Protocol
 class PlannerRequest:
     task: str
     instruction: str
+    response_schema: dict | None = None
 
 
 @dataclass(slots=True)
