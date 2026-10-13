@@ -251,6 +251,32 @@ def test_discovery_waits_for_resume_and_target_roles_then_deduplicates_local_wor
     assert not (client.app.state.settings.data_dir / "portfolio" / proposal["project_id"] / "app.py").exists()
 
 
+def test_discovery_without_resume_does_not_verify_employer_postings(client):
+    app = client.app
+    app.state.autopilot_state.set_enabled(False)
+    app.state.profile_repository.update("", "", ["Software Engineer"], [], [])
+    app.state.job_repository.upsert_many([_job("Software Engineer Intern", "internship", "Build Python APIs.")])
+
+    class CountingVerifier:
+        calls = 0
+
+        def verify(self, *args):
+            self.calls += 1
+            raise AssertionError("postings should not be checked without a resume")
+
+    verifier = CountingVerifier()
+    service = app.state.job_discovery_service
+    service.sources = [_Source("fixture-board", SourceResult([], []))]
+    service.verifier = verifier
+
+    queue = app.state.queue
+    task = queue.get(queue.enqueue("job_discovery", {}, "ollama"))
+    outcome = service.handle_task(task)
+
+    assert outcome.result["application_queued"] is False
+    assert verifier.calls == 0
+
+
 def _run_discovery(client):
     queue = client.app.state.queue
     queue.enqueue("job_discovery", {}, "ollama")

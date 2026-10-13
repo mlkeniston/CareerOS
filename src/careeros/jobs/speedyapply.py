@@ -71,14 +71,23 @@ def _http_url(value: str | None) -> bool:
         return False
 
 
+def _table_shape(columns: list[str]) -> tuple[int, int, int, int, int] | None:
+    names = [cell.strip().casefold() for cell in columns]
+    if names == ["company", "position", "location", "posting", "age"]:
+        return 0, 1, 2, 3, 4
+    if names == ["company", "position", "location", "salary", "apply", "age"]:
+        return 0, 1, 2, 4, 5
+    return None
+
+
 def _has_empty_table(markdown: str) -> bool:
     lines = markdown[:MAX_INPUT].splitlines()[:MAX_ROWS]
     for header, separator in zip(lines, lines[1:]):
         columns = _split_row(header.strip())
         rules = _split_row(separator.strip())
         if (
-            len(columns) == len(rules) == 6
-            and [cell.casefold() for cell in columns] == ["company", "position", "location", "salary", "apply", "age"]
+            _table_shape(columns) is not None
+            and len(columns) == len(rules)
             and all(re.fullmatch(r":?-{3,}:?", cell) for cell in rules)
         ):
             return True
@@ -105,7 +114,11 @@ class SpeedyApplySource:
                 continue
             if cells[0].casefold() == "company" or all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
                 continue
-            if len(cells) != 6:
+            if len(cells) == 5:
+                company_index, title_index, location_index, application_index, age_index = range(5)
+            elif len(cells) == 6:
+                company_index, title_index, location_index, application_index, age_index = 0, 1, 2, 4, 5
+            else:
                 skipped += 1
                 continue
             parsed = []
@@ -113,7 +126,11 @@ class SpeedyApplySource:
                 parser = _Cell()
                 parser.feed(cell[:MAX_CELL * 4])
                 parsed.append(parser)
-            company, title, location, _, application, age = parsed
+            company = parsed[company_index]
+            title = parsed[title_index]
+            location = parsed[location_index]
+            application = parsed[application_index]
+            age = parsed[age_index]
             if not all((company.text, title.text, location.text)) or not _http_url(application.href):
                 skipped += 1
                 continue

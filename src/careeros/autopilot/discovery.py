@@ -106,9 +106,23 @@ class JobDiscoveryService:
             return 0
         profile = self.profiles.get()
         resume = self.resumes.most_recent()
+        roles = [role.strip() for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()]
+        if resume is None or not roles:
+            return 0
+        locations = [location.strip() for location in (profile.preferred_locations or []) if isinstance(location, str) and location.strip()]
+        candidates = []
+        for job in self.repository.recent(limit=500):
+            technology_score, _ = score_technology_role(job)
+            if technology_score < 70 or not _matches_preferred_location(job, locations):
+                continue
+            relevance = max((_role_overlap(job.title, role) for role in roles), default=0)
+            if relevance:
+                candidates.append((technology_score, relevance, job.published_at or "", job.title.casefold(), job))
+        candidates.sort(key=lambda item: item[:4], reverse=True)
         queued = 0
         seen = set()
-        for job in self.repository.recent(limit=500):
+        for candidate in candidates[:50]:
+            job = candidate[4]
             verification = self.verifier.verify(job.employer_url or job.url, job.company, job.title)
             gates = evaluate_application_gates(job, profile, verification)
             with self.repository.db.connect() as conn:
@@ -128,7 +142,7 @@ class JobDiscoveryService:
                            reason=excluded.reason,checked_at=excluded.checked_at""",
                         (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at),
                     )
-            if resume is None or not all(gate.passed for gate in gates):
+            if not all(gate.passed for gate in gates):
                 continue
             identity = f"application:{verification.final_url}:{_normalize(job.company)}:{_normalize(job.title)}:{resume.id}"
             fingerprint = hashlib.sha256(identity.encode()).hexdigest()

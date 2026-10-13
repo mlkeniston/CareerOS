@@ -43,6 +43,23 @@ def test_speedyapply_parses_escaped_pipes_and_location_count_without_using_salar
     assert jobs[0].employer_url == "https://jobs.example.test/apply"
 
 
+def test_speedyapply_parses_current_five_column_posting_table():
+    markdown = """| Company | Position | Location | Posting | Age |
+| --- | --- | --- | --- | --- |
+| <a href="https://acme.example"><strong>Acme</strong></a> | Software Intern | Boston, MA | <a href="https://jobs.acme.example/123"><img alt="Apply"/></a> | 2d |
+"""
+
+    jobs, warnings = SpeedyApplySource.parse_markdown(markdown, "https://github.com/speedyapply/2027-SWE-College-Jobs/blob/main/README.md")
+
+    assert warnings == []
+    assert len(jobs) == 1
+    assert jobs[0].company == "Acme"
+    assert jobs[0].title == "Software Intern"
+    assert jobs[0].location == "Boston, MA"
+    assert jobs[0].employer_url == "https://jobs.acme.example/123"
+    assert jobs[0].source_age == "2d"
+
+
 def test_speedyapply_skips_missing_and_unsafe_application_links_with_bounded_warnings():
     bad = '| Acme | Software Intern | Remote | $40/hr | <a href="javascript:alert(1)">Apply</a> | 1d |'
     empty = '| Acme | Software Intern | Remote | $40/hr | Apply | 1d |'
@@ -121,6 +138,16 @@ def test_speedyapply_reports_non_table_file_but_keeps_valid_file():
 
 def test_speedyapply_accepts_identifiable_empty_six_column_table():
     table = "| Company | Position | Location | Salary | Apply | Age |\n| --- | --- | --- | --- | --- | --- |"
+    source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=table))))
+
+    result = source.fetch(JobQuery())
+
+    assert result.jobs == []
+    assert result.warnings == []
+
+
+def test_speedyapply_accepts_identifiable_empty_current_five_column_table():
+    table = "| Company | Position | Location | Posting | Age |\n| --- | --- | --- | --- | --- |"
     source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=table))))
 
     result = source.fetch(JobQuery())
