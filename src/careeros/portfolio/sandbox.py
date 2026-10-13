@@ -1,6 +1,8 @@
 """Fail-closed Docker runner for untrusted portfolio project checks."""
 from __future__ import annotations
 
+import os
+import selectors
 import subprocess
 import time
 from dataclasses import dataclass
@@ -23,10 +25,10 @@ class SandboxResult:
 
 
 class DockerSandboxRunner:
-    def __init__(self, image: str = "careeros-sandbox:1", docker_executable: str = "docker", run=subprocess.run):
+    def __init__(self, image: str = "careeros-sandbox:1", docker_executable: str = "docker", run=None):
         self.image = image
         self.docker_executable = docker_executable
-        self._run = run
+        self._run = run or _bounded_subprocess_run
 
     def check_available(self) -> tuple[bool, str]:
         try:
@@ -90,6 +92,7 @@ class DockerSandboxRunner:
             return SandboxResult(
                 result.returncode, _text(result.stdout)[:MAX_OUTPUT], _text(result.stderr)[:MAX_OUTPUT],
                 int((time.monotonic() - started) * 1000),
+                limit_exceeded=bool(getattr(result, "output_limited", False) or result.returncode in {137, 143}),
             )
         except (FileNotFoundError, PermissionError, OSError) as exc:
             return SandboxResult(None, "", "", int((time.monotonic() - started) * 1000), available=False,
@@ -105,3 +108,59 @@ def _text(value) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+def _bounded_subprocess_run(argv, *, capture_output=True, text=True, timeout=TIMEOUT_SECONDS, shell=False):
+    """Run Docker while retaining at most 64 KB for each output stream."""
+    if shell or not capture_output:
+        raise ValueError("Docker sandbox requires captured output and shell=False")
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+    selector = selectors.DefaultSelector()
+    streams = {process.stdout: bytearray(), process.stderr: bytearray()}
+    for stream in streams:
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    expired = False
+    output_limited = False
+    while selector.get_map():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            expired = True
+            if process.poll() is None:
+                process.kill()
+            remaining = 0.1
+        events = selector.select(min(max(remaining, 0.01), 0.1))
+        for key, _ in events:
+            stream = key.fileobj
+            try:
+                chunk = os.read(stream.fileno(), 8192)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                selector.unregister(stream)
+                stream.close()
+                continue
+            buffer = streams[stream]
+            if len(buffer) < MAX_OUTPUT:
+                kept = chunk[: MAX_OUTPUT - len(buffer)]
+                buffer.extend(kept)
+                output_limited = output_limited or len(kept) < len(chunk)
+            elif chunk:
+                output_limited = True
+        if process.poll() is not None and not events:
+            # Keep draining until both descriptors reach EOF.
+            continue
+    return_code = process.wait()
+    selector.close()
+    # Streams are closed at EOF; the keys remain available on the map.
+    values = list(streams.values())
+    stdout, stderr = bytes(values[0]), bytes(values[1])
+    if expired:
+        raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr)
+    if text:
+        stdout = stdout.decode("utf-8", errors="replace")
+        stderr = stderr.decode("utf-8", errors="replace")
+    completed = subprocess.CompletedProcess(argv, return_code, stdout=stdout, stderr=stderr)
+    completed.output_limited = output_limited
+    return completed

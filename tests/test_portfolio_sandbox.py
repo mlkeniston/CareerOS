@@ -1,7 +1,8 @@
 import subprocess
+import sys
 from pathlib import Path
 
-from careeros.portfolio.sandbox import DockerSandboxRunner
+from careeros.portfolio.sandbox import DockerSandboxRunner, _bounded_subprocess_run
 
 
 class Manifest:
@@ -95,3 +96,14 @@ def test_runner_caps_output_and_reports_timeout(tmp_path):
     assert result.timed_out is True
     assert len(result.stdout) <= 65_536
     assert len(result.stderr) <= 65_536
+
+
+def test_bounded_subprocess_discards_output_beyond_the_cap():
+    result = _bounded_subprocess_run(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x'*100000); sys.stderr.write('y'*100000)"],
+        capture_output=True, text=True, timeout=10, shell=False,
+    )
+    assert result.returncode == 0
+    assert result.output_limited is True
+    assert len(result.stdout) == 65_536
+    assert len(result.stderr) == 65_536
