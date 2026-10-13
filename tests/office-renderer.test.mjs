@@ -360,7 +360,7 @@ async function applicationReviewHarness(api, extra = {}, includeReview = false) 
   const app = await readFile(new URL("../src/careeros/static/app.js", import.meta.url), "utf8");
   const pollStart = app.indexOf("async function pollApplication(");
   const renderStart = app.indexOf("function renderApplicationReview(");
-  const portfolioStart = app.indexOf('$("#portfolio-brief").addEventListener', renderStart);
+  const portfolioStart = app.indexOf('$("#reload-proposals").addEventListener', renderStart);
   const pollAndLoadSource = app.slice(pollStart, renderStart);
   const reviewSource = includeReview ? app.slice(renderStart, portfolioStart) : "";
   const rendered = [];

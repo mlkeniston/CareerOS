@@ -29,6 +29,7 @@ class ProjectManifest:
 class ProjectEngineeringService:
     def __init__(self, db, queue: TaskQueue, gateway: PlannerGateway, paths: PortfolioPaths, proposals):
         self.db, self.queue, self.gateway, self.paths, self.proposals = db, queue, gateway, paths, proposals
+        self.qa = None
 
     def create_from_ideas(self, ideas: list[ProjectIdea], market_skills: list[str]) -> tuple[str, str] | None:
         skills = _skills(market_skills)
@@ -154,8 +155,10 @@ class ProjectEngineeringService:
         except Exception:
             shutil.rmtree(stage, ignore_errors=True)
             raise
-        # QA is not implemented until Task 4, so keep it preparing and unavailable for review.
-        return TaskOutcome("completed", {"proposal_id": proposal_id, "staged": True, "qa_pending": True})
+        if self.qa is not None:
+            cycle = int(task.payload.get("next_qa_cycle", 1))
+            self.qa.enqueue(proposal_id, cycle, source_task_id=task.id)
+        return TaskOutcome("completed", {"proposal_id": proposal_id, "staged": True, "qa_pending": self.qa is None})
 
     def _validate_files(self, raw_files: list, manifest: ProjectManifest) -> list[tuple[str, str]]:
         if not 1 <= len(raw_files) <= 30:

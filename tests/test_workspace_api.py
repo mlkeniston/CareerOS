@@ -146,9 +146,12 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     snapshot = client.get("/api/workspace").json()
     workers = {worker["id"]: worker for worker in snapshot["workers"]}
 
-    assert [workers[key]["department"] for key in ("job-hunter", "resume-analyst", "application-prep", "portfolio-engineer", "linkedin-outreach", "director")] == [
-        "Job Hunters", "Resume Team", "Application Team", "Engineering Team", "LinkedIn Outreach", "Dispatch"
+    assert [workers[key]["department"] for key in ("job-hunter", "resume-analyst", "application-prep", "hiring-manager", "portfolio-engineer", "project-qa", "linkedin-outreach", "director")] == [
+        "Job Hunters", "Resume Team", "Application Team", "Hiring Manager", "Engineering Team", "Project QA", "LinkedIn Outreach", "Dispatch"
     ]
+    assert workers["project-qa"]["gender"] == "male"
+    assert workers["project-qa"]["provider"] == "ollama"
+    assert workers["project-qa"]["model_status"] == "ready"
     assert workers["job-hunter"]["status"] == "waiting"
     assert workers["job-hunter"]["task_id"] == discovery_waiting
     assert workers["application-prep"]["status"] == "working"

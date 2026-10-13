@@ -613,6 +613,15 @@ body.office-active .department-link[aria-current="page"] {
   background: linear-gradient(90deg, rgba(78, 243, 255, .14), rgba(78, 243, 255, .035) 72%, transparent);
   box-shadow: 0 0 22px rgba(78, 243, 255, .08);
 }
+
+.qa-sources { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0; color: var(--cyan); font: 14px var(--pixel-body); }
+.qa-review { margin: 18px 0; padding: 14px; border-left: 2px solid var(--cyan); background: rgba(8, 12, 26, .48); box-shadow: 0 0 18px rgba(78,243,255,.08); }
+.qa-review.qa-quality_hold { border-color: var(--magenta); box-shadow: 0 0 18px rgba(255,79,195,.1); }
+.qa-review h3 { margin: 0 0 8px; color: #eafcff; font: 8px/1.7 var(--pixel-display); }
+.qa-finding { margin: 9px 0; padding: 10px; border: 1px solid rgba(255,79,195,.28); color: #f8e9fa; }
+.qa-finding strong { display: block; font: 15px/1.3 var(--pixel-body); }
+.qa-finding small { color: var(--cyan); }
+.qa-finding pre { max-height: 8rem; overflow: auto; white-space: pre-wrap; color: #cdbfdd; font: 14px/1.2 var(--pixel-body); }
 body.office-active .worker-entry:hover,
 body.office-active .worker-entry[aria-pressed="true"] {
   border-color: transparent;

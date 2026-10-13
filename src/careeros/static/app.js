@@ -1,4 +1,4 @@
-import { HandoffCursor, OfficeRenderer } from "./office-renderer.js?v=neon-office-fullbleed-20261011";
+import { HandoffCursor, OfficeRenderer } from "./office-renderer.js?v=project-qa-worker-20261012";
 
 const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, activeOutreach: null, office: null, officeSelection: null };
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -54,10 +54,11 @@ function notify(message) {
 }
 
 function go(station) {
-  const home = station === "home" || !$("#" + station + "-screen");
+  const screenStation = station === "qa" ? "portfolio" : station;
+  const home = station === "home" || !$("#" + screenStation + "-screen");
   if (station !== "applications") state.applicationPollId = (state.applicationPollId || 0) + 1;
-  state.officeSelection = home ? null : { type: "station", id: station };
-  document.body.dataset.station = home ? "home" : station;
+  state.officeSelection = home ? null : { type: "station", id: screenStation };
+  document.body.dataset.station = home ? "home" : screenStation;
   officeRenderer.setSelection(state.officeSelection);
   document.body.classList.toggle("office-active", home);
   document.body.classList.toggle("station-active", !home);
@@ -66,7 +67,7 @@ function go(station) {
     else button.removeAttribute("aria-current");
   });
   $("#home-screen").hidden = !home;
-  $$(".station-screen").forEach(screen => { screen.hidden = home || screen.id !== station + "-screen"; });
+  $$(".station-screen").forEach(screen => { screen.hidden = home || screen.id !== screenStation + "-screen"; });
   hideWorkerTooltip();
   closeWorkerRoster();
   closeInspectorDrawer();
@@ -79,17 +80,17 @@ function go(station) {
     officeRenderer.setActive(false);
     startOfficePolling(false);
   }
-  if (!home && station === "jobs") {
+  if (!home && screenStation === "jobs") {
     searchJobs();
-  } else if (!home && station === "resume") {
+  } else if (!home && screenStation === "resume") {
     loadResumeDesk();
-  } else if (!home && station === "portfolio") {
+  } else if (!home && screenStation === "portfolio") {
     loadProposals();
-  } else if (!home && station === "applications") {
+  } else if (!home && screenStation === "applications") {
     loadOfficeApplications();
-  } else if (!home && station === "outreach") {
+  } else if (!home && screenStation === "outreach") {
     loadOutreach();
-  } else if (!home && station === "settings") {
+  } else if (!home && screenStation === "settings") {
     loadSettings();
   }
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -337,7 +338,7 @@ const OFFICE_STATIONS = {
   resume: { title: "Resume Team", target: "resume", description: "Keep your profile and resume versions on this Mac." },
   applications: { title: "Application Team", target: "applications", description: "Review application drafts. CareerOS never submits them." },
   outreach: { title: "LinkedIn Outreach", target: "outreach", description: "Review locally prepared messages for matched roles." },
-  portfolio: { title: "Engineering Team", target: "portfolio", description: "Review staged project proposals before applying any files." },
+  portfolio: { title: "Engineering & Project QA", target: "portfolio", description: "Engineering builds from sourced ideas. Project QA independently tests each build and returns defects for repair." },
   settings: { title: "Dispatch", target: "settings", description: "Choose the local planner or explicitly configure optional cloud use." },
 };
 const WORKER_STATIONS = {
@@ -346,6 +347,7 @@ const WORKER_STATIONS = {
   "application-prep": "applications",
   "hiring-manager": "applications",
   "portfolio-engineer": "portfolio",
+  "project-qa": "portfolio",
   "linkedin-outreach": "outreach",
   director: "settings",
 };
@@ -380,6 +382,7 @@ function renderWorkerTooltip(workerId, position) {
   if (worker.latest_verdict === null && worker.id === "hiring-manager") details.push("Latest verdict: Waiting");
   if (worker.current_item) details.push(worker.current_item);
   if (worker.latest_verdict) details.push(`Latest verdict: ${worker.latest_verdict}`);
+  if (worker.qa_status) details.push(`QA cycle: ${worker.qa_status}`);
   if (worker.hold_reason) details.push(worker.hold_reason);
   $("#worker-tooltip-meta").textContent = details.join("  /  ");
   const modelLine = $("#worker-tooltip-model");
@@ -436,6 +439,7 @@ function renderInspector() {
     if (worker.model) addInspectorMeta(meta, "Model", `${worker.provider || "Ollama"} · ${worker.model}`);
     if (worker.current_item) addInspectorMeta(meta, "Current item", worker.current_item);
     if (worker.latest_verdict) addInspectorMeta(meta, "Latest verdict", worker.latest_verdict);
+    if (worker.qa_status) addInspectorMeta(meta, "QA result", worker.qa_status.replaceAll("_", " "));
     if (worker.hold_reason) addInspectorMeta(meta, "Hold reason", worker.hold_reason);
     if (worker.since) addInspectorMeta(meta, "Working for", formatElapsed(worker.since));
   } else {
@@ -1159,6 +1163,35 @@ function renderProposal(proposal) {
   panel.append(title);
   if (proposal.task_error) panel.append(element("p", "muted", proposal.task_error));
   if (proposal.summary) panel.append(element("p", "review-summary", proposal.summary));
+  if (proposal.source_urls?.length) {
+    const sources = element("div", "qa-sources");
+    sources.append(element("strong", "", "Idea sources"));
+    proposal.source_urls.forEach(value => {
+      const url = safeJobUrl(value);
+      if (!url) return;
+      const link = element("a", "job-link", new URL(url).hostname);
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      sources.append(link);
+    });
+    panel.append(sources);
+  }
+  const qa = proposal.latest_qa;
+  if (qa) {
+    const review = element("section", `qa-review qa-${qa.status}`);
+    review.append(element("h3", "", `Independent Project QA · ${qa.status.replaceAll("_", " ")}`));
+    review.append(element("p", "muted", `Cycle ${qa.cycle} of 3 · ${qa.model || "Ollama"} · sandbox ${qa.deterministic_report?.available ? (qa.deterministic_report.exit_code === 0 ? "passed" : "failed") : "unavailable"}`));
+    (qa.critique?.findings || []).forEach(finding => {
+      const item = element("article", "qa-finding");
+      item.append(element("strong", "", finding.issue || "QA finding"));
+      if (finding.file) item.append(element("small", "", finding.file));
+      if (finding.evidence) item.append(element("pre", "", finding.evidence));
+      review.append(item);
+    });
+    if (proposal.hold_reason) review.append(element("p", "review-status held", proposal.hold_reason));
+    panel.append(review);
+  }
   (proposal.files || []).forEach(file => {
     const box = element("article", "file-preview");
     const head = element("header");

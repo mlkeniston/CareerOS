@@ -30,28 +30,12 @@ class ApplyInput(BaseModel):
 
 @router.post("/api/portfolio/preview")
 def preview_proposal(payload: ProposalPreviewInput, request: Request):
-    try:
-        brief = PortfolioBrief(payload.project_id, payload.title, payload.description)
-        data, token = request.app.state.portfolio_service.preview(brief)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return {"sent_data": data, "preview_token": token, "model": "gpt-6-luna"}
+    raise HTTPException(410, "CareerOS now discovers project ideas and prepares them automatically; manual briefs are disabled.")
 
 
 @router.post("/api/portfolio/proposals", status_code=202)
 def create_proposal(payload: ProposalInput, request: Request):
-    try:
-        brief = PortfolioBrief(payload.project_id, payload.title, payload.description)
-        task_id, proposal_id = request.app.state.portfolio_service.create(brief, payload.provider, payload.confirm_cloud, payload.preview_token)
-    except PaidUseConfirmationRequired as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ProviderUnavailable as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return {"task_id": task_id, "proposal_id": proposal_id, "status": "queued"}
+    raise HTTPException(410, "CareerOS creates portfolio projects from public ideas automatically; manual briefs are disabled.")
 
 
 @router.get("/api/portfolio/proposals")
@@ -62,6 +46,9 @@ def list_proposals(request: Request):
         if proposal["status"] == "preparing" and task and task.status == "interrupted":
             proposal["status"] = "interrupted"
         proposal["task_status"] = task.status if task else None
+        proposal["qa_history"] = [_qa_record(item) for item in request.app.state.project_qa_service.history(proposal["id"])]
+        latest = request.app.state.project_qa_service.latest(proposal["id"])
+        proposal["latest_qa"] = _qa_record(latest) if latest else None
     return proposals
 
 
@@ -83,11 +70,24 @@ def get_proposal(proposal_id: str, request: Request):
     proposal["task_status"] = task.status if task else None
     proposal["task_error"] = task.error if task else None
     proposal["task_provider"] = task.provider if task else None
+    proposal["qa_history"] = [_qa_record(item) for item in request.app.state.project_qa_service.history(proposal_id)]
+    latest = request.app.state.project_qa_service.latest(proposal_id)
+    proposal["latest_qa"] = _qa_record(latest) if latest else None
     if task and task.status in {"failed", "interrupted"}:
         proposal["retry_brief"] = task.payload.get("brief")
         if proposal["status"] == "preparing" and task.status == "interrupted":
             proposal["status"] = "interrupted"
     return proposal
+
+
+def _qa_record(item):
+    if item is None:
+        return None
+    return {
+        "proposal_id": item.proposal_id, "cycle": item.cycle, "status": item.status,
+        "deterministic_report": item.deterministic_report, "critique": item.critique,
+        "provider": item.provider, "model": item.model, "created_at": item.created_at,
+    }
 
 
 @router.post("/api/portfolio/proposals/{proposal_id}/approve")

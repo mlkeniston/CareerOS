@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 import uuid
@@ -117,11 +118,25 @@ class PortfolioService:
 
     def handle_task(self, task: Task) -> TaskOutcome:
         proposal_id = task.payload["proposal_id"]
+        proposal = self.get(proposal_id)
+        if proposal is None:
+            raise LookupError("Portfolio proposal record not found")
+        # Legacy task rows created from user-supplied briefs are not part of the
+        # autonomous, independently tested pipeline. Hold them instead of making
+        # a proposal reviewable without a source trail, manifest, and QA report.
+        if not proposal.get("engineering_fingerprint"):
+            stage = self.paths.proposal_dir(proposal_id)
+            if stage.is_dir() and not stage.is_symlink():
+                shutil.rmtree(stage)
+            with self.db.connect() as conn:
+                conn.execute(
+                    "UPDATE portfolio_proposals SET status='quality_hold',hold_reason=?,updated_at=? WHERE id=? AND status='preparing'",
+                    ("Manual project briefs are disabled; CareerOS prepares sourced projects automatically.", now(), proposal_id),
+                )
+            return TaskOutcome("completed", {"proposal_id": proposal_id, "status": "quality_hold"})
         stage = None
         try:
             proposal = self.get(proposal_id)
-            if proposal is None:
-                raise LookupError("Portfolio proposal record not found")
             if proposal["status"] in {"needs_review", "approved"}:
                 return TaskOutcome("needs_review", {"proposal_id": proposal_id})
             if proposal["status"] == "applied":
@@ -146,7 +161,6 @@ class PortfolioService:
             if stage.exists():
                 if stage.is_symlink() or not stage.is_dir():
                     raise RuntimeError("Interrupted portfolio staging is not a safe directory")
-                import shutil
                 shutil.rmtree(stage)
             stage.mkdir(parents=True, exist_ok=False)
             try:
@@ -170,7 +184,6 @@ class PortfolioService:
             return TaskOutcome("needs_review", {"proposal_id": proposal_id})
         except Exception:
             if stage is not None:
-                import shutil
                 shutil.rmtree(stage, ignore_errors=True)
             with self.db.connect() as conn:
                 conn.execute("UPDATE portfolio_proposals SET status='failed',updated_at=? WHERE id=? AND status='preparing'", (now(), proposal_id))
@@ -205,10 +218,22 @@ class PortfolioService:
             raise LookupError("Proposal not found")
         if proposal["status"] == "approved":
             return proposal
+        if proposal["status"] == "quality_hold":
+            raise RuntimeError("Project is on quality hold and cannot be approved")
         if proposal["status"] != "needs_review":
             raise RuntimeError("Only a complete proposal can be approved")
         with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT status FROM portfolio_proposals WHERE id=?", (proposal_id,)).fetchone()
+            if row is None:
+                raise LookupError("Proposal not found")
+            if row["status"] == "quality_hold":
+                raise RuntimeError("Project is on quality hold and cannot be approved")
+            if row["status"] != "needs_review":
+                raise RuntimeError("Only a complete proposal can be approved")
+            self._require_passed_qa(conn, proposal_id)
             conn.execute("UPDATE portfolio_proposals SET status='approved',updated_at=? WHERE id=? AND status='needs_review'", (now(), proposal_id))
+            conn.commit()
         return self.get(proposal_id)
 
     def diffs(self, proposal_id: str) -> list[dict]:
@@ -243,8 +268,14 @@ class PortfolioService:
         proposal = self.get(proposal_id)
         if not proposal:
             raise LookupError("Proposal not found")
+        if proposal["status"] == "quality_hold":
+            raise RuntimeError("Project is on quality hold and cannot be applied")
         if proposal["status"] != "approved":
             raise RuntimeError("Approve the proposal before applying files")
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_passed_qa(conn, proposal_id)
+            conn.commit()
         items = proposal["files"]
         normalized_replace = set(replace_existing)
         proposed_paths = {item["path"] for item in items}
@@ -282,7 +313,12 @@ class PortfolioService:
                 os.replace(temp, target)
                 replaced.append((target, backup))
             with self.db.connect() as conn:
-                conn.execute("UPDATE portfolio_proposals SET status='applied',updated_at=? WHERE id=? AND status='approved'", (now(), proposal_id))
+                conn.execute("BEGIN IMMEDIATE")
+                self._require_passed_qa(conn, proposal_id)
+                changed = conn.execute("UPDATE portfolio_proposals SET status='applied',updated_at=? WHERE id=? AND status='approved'", (now(), proposal_id)).rowcount
+                if changed != 1:
+                    raise RuntimeError("Project approval changed before files were applied")
+                conn.commit()
             return [relative for relative, _, _, _ in staged]
         except Exception:
             for target, backup in reversed(replaced):
@@ -299,6 +335,12 @@ class PortfolioService:
         if not self.paths.root.exists():
             return []
         return sorted(child.name for child in self.paths.root.iterdir() if not child.is_symlink() and child.is_dir() and child.name != ".staging" and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", child.name))
+
+    @staticmethod
+    def _require_passed_qa(conn, proposal_id: str) -> None:
+        row = conn.execute("SELECT status FROM project_qa_runs WHERE proposal_id=? ORDER BY cycle DESC LIMIT 1", (proposal_id,)).fetchone()
+        if row is None or row["status"] != "passed":
+            raise RuntimeError("A passing independent Project QA review is required")
 
     def _read_project(self, project_id: str) -> dict[str, str]:
         root = self.paths.project_root(project_id)
@@ -328,7 +370,7 @@ class PortfolioService:
 def _proposal(row: sqlite3.Row) -> dict:
     files = json.loads(row["files_json"])
     keys = set(row.keys())
-    return {"id": row["id"], "project_id": row["project_id"], "task_id": row["task_id"], "status": row["status"], "title": row["title"], "summary": row["summary"], "files": files, "updated_at": row["updated_at"], "source_urls": json.loads(row["source_urls_json"]) if "source_urls_json" in keys else [], "manifest": json.loads(row["manifest_json"]) if "manifest_json" in keys else {}}
+    return {"id": row["id"], "project_id": row["project_id"], "task_id": row["task_id"], "status": row["status"], "title": row["title"], "summary": row["summary"], "files": files, "updated_at": row["updated_at"], "source_urls": json.loads(row["source_urls_json"]) if "source_urls_json" in keys else [], "manifest": json.loads(row["manifest_json"]) if "manifest_json" in keys else {}, "hold_reason": row["hold_reason"] if "hold_reason" in keys else None, "engineering_fingerprint": row["engineering_fingerprint"] if "engineering_fingerprint" in keys else None}
 
 
 def _snapshot_token(snapshot: dict) -> str:

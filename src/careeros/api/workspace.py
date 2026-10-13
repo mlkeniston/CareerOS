@@ -12,6 +12,7 @@ _WORKERS = (
     ("application-prep", "Application Team", "application-team-01", "amber", "application"),
     ("hiring-manager", "Hiring Manager", "hiring-manager-01", "green", "hiring_manager"),
     ("portfolio-engineer", "Engineering Team", "engineering-team-01", "purple", "portfolio"),
+    ("project-qa", "Project QA", "project-qa-01", "green", "project_qa"),
     ("linkedin-outreach", "LinkedIn Outreach", "outreach-team-01", "coral", "outreach"),
     ("director", "Dispatch", "dispatch-01", "coral", None),
 )
@@ -21,6 +22,8 @@ _TASK_LABELS = {
     "hiring_manager": "Review application evidence",
     "application_revision": "Revise application locally",
     "portfolio": "Prepare portfolio proposal",
+    "project_qa": "Test portfolio project",
+    "project_revision": "Repair project findings",
     "outreach": "Prepare LinkedIn outreach draft",
 }
 _STATUS_PRIORITY = {"running": 0, "queued": 1, "needs_review": 2, "failed": 3, "interrupted": 4}
@@ -88,6 +91,34 @@ def get_workspace(request: Request):
                 outreach_model_state, outreach_model_name,
             )
             worker.update({"status": status, "task_label": label})
+        if worker_id == "portfolio-engineer":
+            revision_task = _current_task(tasks, "project_revision")
+            if revision_task and revision_task.status in {"running", "queued"}:
+                worker.update(_worker_task(revision_task))
+        if worker_id == "project-qa":
+            worker.update({"gender": "male", "provider": "ollama", "model": model_name,
+                           "model_status": model_state, "current_item": None, "latest_verdict": None,
+                           "hold_reason": None, "qa_status": None})
+            latest_qa = request.app.state.project_qa_service.latest_workspace()
+            active_qa_task = task if task and task.status in {"running", "queued"} else None
+            if active_qa_task:
+                proposal_id = active_qa_task.payload.get("proposal_id")
+                proposal = request.app.state.portfolio_service.get(proposal_id) if proposal_id else None
+                title = proposal["title"] if proposal else "portfolio project"
+                worker.update({"current_item": title,
+                               "task_label": ("Waiting to test " if active_qa_task.status == "queued" else "Testing ") + title})
+            elif latest_qa:
+                run, title, hold_reason = latest_qa
+                if run is None:
+                    worker.update({"qa_status": "quality_hold", "current_item": title, "latest_verdict": "hold",
+                                   "hold_reason": hold_reason, "status": "quality_hold",
+                                   "task_label": f"Held before QA: {title}"})
+                else:
+                    worker.update({"qa_status": run.status, "current_item": title,
+                                   "latest_verdict": run.critique.get("verdict"), "hold_reason": hold_reason,
+                                   "status": "quality_hold" if run.status == "quality_hold" else "idle",
+                                   "task_label": "Project held for inspection" if run.status == "quality_hold" else
+                                   f"Last check passed: {title}" if run.status == "passed" else f"Findings sent back: {title}"})
         if worker_id == 'hiring-manager':
             worker.update({'gender': 'male', 'provider': 'ollama', 'model': model_name,
                            'model_status': model_state, 'current_item': None, 'latest_verdict': None, 'hold_reason': None})
@@ -211,6 +242,8 @@ def _waiting_state(
         return "waiting", "Waiting for a suitable discovered role" if model_state == "ready" else "Waiting for the local model"
     if worker_id == "portfolio-engineer":
         return "waiting", "Watching for recurring skills in public listings"
+    if worker_id == "project-qa":
+        return "waiting", "Waiting for an engineering build"
     return "idle", "No dispatch task is active"
 
 

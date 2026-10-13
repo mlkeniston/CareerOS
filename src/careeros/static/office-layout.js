@@ -178,7 +178,8 @@ export const STATIONS = Object.freeze([
   station("applications", 7, 7, "HIRING MANAGER", "hiring-manager-01", { col: 7, row: 8 }, "terminal"),
   station("portfolio", 10, 7, "BUILD LAB", null, null, "workbench"),
   station("portfolio", 13, 7, "TEST BENCH", "engineering-team-01", { col: 13, row: 8 }, "workbench"),
-  station("portfolio", 16, 7, "STAGING", null, null, "workbench"),
+  station("portfolio", 11, 7, "STAGING", null, null, "workbench"),
+  station("portfolio", 16, 7, "PROJECT QA", "project-qa-01", { col: 16, row: 8 }, "workbench"),
   station("dispatch", 8, 4, "QUEUE ROUTER", "dispatch-01", { col: 8, row: 5 }, "console"),
 ]);
 
@@ -210,7 +211,7 @@ export const CONVEYOR_NETWORK = Object.freeze([
     { col: 16.55, row: 7.78 },
   ], [
     "applications-1-7", "applications-4-7", "applications-7-7",
-    "portfolio-10-7", "portfolio-13-7", "portfolio-16-7",
+    "portfolio-10-7", "portfolio-13-7", "portfolio-11-7", "portfolio-16-7",
   ]),
 ]);
 
@@ -312,6 +313,13 @@ const MANAGER_BODY_SPRITE = Object.freeze([
   "...JBBJ....", "...PPPP....", "..PP...PP..", ".PP.....PP.", ".KK.....KK.", "KK.......KK",
 ]);
 const MANAGER_SPRITE = addFinePixels(addFinePixels(MANAGER_BODY_SPRITE));
+const QA_BODY_SPRITE = Object.freeze([
+  "...HHHHH...", "..HHHHHHH..", "..HSSSSSH..", "..SSESESS..",
+  "..SSSSSSS..", "...MMMMM...", "...SMMMS...", "...CCCCC...",
+  "..JJJJJJJ..", ".JTTAAATTJ.", ".JJTTTTTJJ.", "..JTTTTTJ..",
+  "...JBBJ....", "...QQQQ....", "..QQ...QQ..", ".QQ.....QQ.", ".KK.....KK.", "KK.......KK",
+]);
+const QA_SPRITE = addFinePixels(addFinePixels(QA_BODY_SPRITE));
 
 export const WORKER_APPEARANCE = Object.freeze({
   "job-hunter": workerAppearance("cyan", "job-hunters-01", { col: 0, row: 5 }, "visor"),
@@ -319,6 +327,7 @@ export const WORKER_APPEARANCE = Object.freeze({
   "application-prep": workerAppearance("amber", "application-team-01", { col: 6, row: 5 }, "clipboard"),
   "hiring-manager": {...workerAppearance("green", "hiring-manager-01", { col: 7, row: 8 }, "clipboard"), gender: "male", sprite: MANAGER_SPRITE, outline: silhouetteOutline(MANAGER_SPRITE)},
   "portfolio-engineer": workerAppearance("purple", "engineering-team-01", { col: 15, row: 5 }, "goggles"),
+  "project-qa": {...workerAppearance("green", "project-qa-01", { col: 16, row: 8 }, "clipboard"), gender: "male", sprite: QA_SPRITE, outline: silhouetteOutline(QA_SPRITE)},
   "linkedin-outreach": workerAppearance("coral", "outreach-team-01", { col: 12, row: 5 }, "headset"),
   director: workerAppearance("coral", "dispatch-01", { col: 9, row: 5 }, "cap"),
 });
@@ -335,6 +344,7 @@ export const SPRITE_COLORS = Object.freeze({
   B: "#534333",
   P: "#414846",
   K: "#272a27",
+  Q: "#547063",
   t: "#929274",
   j: "#4d5947",
   s: "#e3b18b",

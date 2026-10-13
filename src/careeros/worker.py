@@ -17,15 +17,21 @@ class TaskOutcome:
 
 
 class Worker:
-    def __init__(self, queue: TaskQueue, handlers: dict[str, Callable[[Task], TaskOutcome]] | None = None, before_claim: Callable[[], None] | None = None):
+    def __init__(self, queue: TaskQueue, handlers: dict[str, Callable[[Task], TaskOutcome]] | None = None,
+                 before_claim: Callable[[], None] | None = None,
+                 failure_handlers: dict[str, Callable[[Task, str], None]] | None = None):
         self.queue = queue
         self.handlers = dict(handlers or {})
+        self.failure_handlers = dict(failure_handlers or {})
         self.before_claim = before_claim
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
     def register(self, kind: str, handler: Callable[[Task], TaskOutcome]) -> None:
         self.handlers[kind] = handler
+
+    def register_failure_handler(self, kind: str, handler: Callable[[Task, str], None]) -> None:
+        self.failure_handlers[kind] = handler
 
     def run_once(self) -> bool:
         if self.before_claim is not None:
@@ -45,8 +51,11 @@ class Worker:
                 task.id, safe, delay_seconds=min(60 * 2 ** (task.attempt_count - 1), 900)
             ):
                 self.queue.fail(task.id, safe)
+                self._notify_failure(task, safe)
         except Exception as exc:
-            self.queue.fail(task.id, _safe_error(exc))
+            safe = _safe_error(exc)
+            self.queue.fail(task.id, safe)
+            self._notify_failure(task, safe)
         return True
 
     def start(self) -> None:
@@ -70,6 +79,15 @@ class Worker:
                 worked = False
             if not worked:
                 self._stop.wait(0.5)
+
+    def _notify_failure(self, task: Task, message: str) -> None:
+        handler = self.failure_handlers.get(task.kind)
+        if handler is None:
+            return
+        try:
+            handler(task, message)
+        except Exception:
+            logging.getLogger(__name__).exception("task failure handler failed for %s", task.kind)
 
 
 def _safe_error(exc: Exception) -> str:

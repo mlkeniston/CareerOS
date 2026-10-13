@@ -93,3 +93,37 @@ def test_worker_does_not_retry_other_errors(queue):
     assert task.status == "failed"
     assert task.attempt_count == 1
     assert task.available_at is None
+
+
+def test_worker_calls_failure_handler_after_a_permanent_task_failure(queue):
+    task_id = queue.enqueue("sample", {"proposal_id": "project-1"}, "ollama")
+    failures = []
+    worker = Worker(
+        queue,
+        {"sample": lambda task: (_ for _ in ()).throw(ValueError("invalid project bundle"))},
+        failure_handlers={"sample": lambda task, message: failures.append((task.id, task.payload["proposal_id"], message))},
+    )
+
+    assert worker.run_once()
+
+    assert queue.get(task_id).status == "failed"
+    assert failures == [(task_id, "project-1", "invalid project bundle")]
+
+
+def test_worker_calls_failure_handler_after_local_retries_are_exhausted(queue):
+    from careeros.workflows.errors import RetryableTaskError
+
+    task_id = queue.enqueue("project_qa", {"proposal_id": "project-1", "cycle": 2}, "ollama")
+    with queue.db.connect() as conn:
+        conn.execute("UPDATE tasks SET attempt_count=2 WHERE id=?", (task_id,))
+    failures = []
+    worker = Worker(
+        queue,
+        {"project_qa": lambda task: (_ for _ in ()).throw(RetryableTaskError("Ollama offline"))},
+        failure_handlers={"project_qa": lambda task, message: failures.append((task.id, task.payload["cycle"], message))},
+    )
+
+    assert worker.run_once()
+
+    assert queue.get(task_id).status == "failed"
+    assert failures == [(task_id, 2, "Ollama offline")]

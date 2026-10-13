@@ -121,6 +121,15 @@ test("worker destinations and clickable desk centers use the isometric map", () 
   assert.equal(STATIONS.find(item => item.room === "dispatch").selectionId, "settings");
 });
 
+test('Project QA has a distinct male sprite at its own test bench', () => {
+  const qa = WORKER_APPEARANCE['project-qa'];
+  assert.equal(qa.gender, 'male');
+  assert.equal(qa.stationId, 'project-qa-01');
+  assert.ok(qa.sprite.some(row => row.includes('M')));
+  assert.notDeepEqual(qa.sprite, WORKER_APPEARANCE['portfolio-engineer'].sprite);
+  assert.ok(STATIONS.some(station => station.workerStationId === qa.stationId && station.label === 'PROJECT QA'));
+});
+
 test("the connected conveyor network reaches every station and joins through Dispatch", () => {
   const stationIds = CONVEYOR_NETWORK.flatMap(lane => lane.stationIds);
   assert.equal(new Set(stationIds).size, stationIds.length, "each station should appear once in the network");

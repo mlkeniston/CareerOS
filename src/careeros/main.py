@@ -28,6 +28,8 @@ from careeros.planner.openai import OpenAIPlanner
 from careeros.portfolio.ideas import ProjectIdeaRepository, ProjectIdeaService
 from careeros.portfolio.engineering import ProjectEngineeringService
 from careeros.portfolio.paths import PortfolioPaths
+from careeros.portfolio.qa import ProjectQAService
+from careeros.portfolio.sandbox import DockerSandboxRunner
 from careeros.portfolio.sources import ArxivProjectSource, GitHubProjectSource, HackerNewsProjectSource
 from careeros.portfolio.service import PortfolioService
 from careeros.profiles.repository import ProfileRepository, ResumeRepository
@@ -62,6 +64,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     outreach_service = OutreachService(db, queue, outreach_planner, job_repository, profile_repository, resume_repository)
     portfolio_paths = PortfolioPaths(settings.data_dir)
     portfolio_service = PortfolioService(db, queue, gateway, portfolio_paths)
+    sandbox_runner = DockerSandboxRunner(settings.sandbox_image)
+    project_qa_service = ProjectQAService(db, queue, gateway, portfolio_service, portfolio_paths, sandbox_runner)
     project_idea_repository = ProjectIdeaRepository(db)
     def tick_autopilot() -> None:
         try:
@@ -81,6 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     worker.register("application_revision", application_service.handle_revision_task)
     worker.register("outreach", outreach_service.handle_task)
     worker.register("portfolio", portfolio_service.handle_task)
+    worker.register("project_qa", project_qa_service.run_task)
     discovery_worker = Worker(queue, before_claim=tick_autopilot)
 
     @asynccontextmanager
@@ -122,6 +127,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.outreach_service = outreach_service
     app.state.portfolio_service = portfolio_service
     app.state.portfolio_paths = portfolio_paths
+    app.state.sandbox_runner = sandbox_runner
+    app.state.project_qa_service = project_qa_service
     app.state.project_idea_repository = project_idea_repository
 
     feed_client = httpx.Client(timeout=httpx.Timeout(15, connect=5), headers={"User-Agent": "CareerOS/0.1"}, trust_env=False)
@@ -140,9 +147,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     project_idea_service = ProjectIdeaService(project_idea_sources, project_idea_repository)
     app.state.project_idea_service = project_idea_service
     project_engineering_service = ProjectEngineeringService(db, queue, gateway, portfolio_paths, portfolio_service)
+    project_engineering_service.qa = project_qa_service
     app.state.project_engineering_service = project_engineering_service
     worker.register("project_engineering", project_engineering_service.handle_task)
     worker.register("project_revision", project_engineering_service.handle_revision_task)
+    for kind in ("project_engineering", "project_revision", "project_qa"):
+        worker.register_failure_handler(kind, project_qa_service.hold_after_task_failure)
     employer_verifier = EmployerPostingVerifier()
     application_service.posting_verifier = employer_verifier
     job_discovery_service = JobDiscoveryService(
