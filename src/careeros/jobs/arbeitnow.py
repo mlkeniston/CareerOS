@@ -38,10 +38,15 @@ class ArbeitnowSource:
                     if external_id in seen:
                         continue
                     seen.add(external_id)
-                    job = JobListing("arbeitnow", external_id, row["title"], row.get("company_name") or row.get("company") or "Unknown employer", row.get("location") or "", kind, row["url"], strip_html(row.get("description") or ""), row.get("created_at"), datetime.now(timezone.utc).isoformat(), bool(row.get("remote")), original_kind=raw_kind)
+                    created = row.get('created_at')
+                    published = datetime.fromtimestamp(created, timezone.utc).isoformat() if isinstance(created, (int, float)) else created if isinstance(created, str) else None
+                    job = JobListing("arbeitnow", external_id, row["title"], row.get("company_name") or row.get("company") or "Unknown employer", row.get("location") or "", kind, row["url"], strip_html(row.get("description") or ""), published, datetime.now(timezone.utc).isoformat(), bool(row.get("remote")), original_kind=raw_kind,
+                        source_url=f"{self.URL}?page={page}", employer_url=row.get('employer_url'),
+                        application_url=row.get('application_url'),
+                        requisition_id=str(row['requisition_id']) if row.get('requisition_id') is not None else None)
                     if matches_query(job, query):
                         rows.append(job)
-                except (KeyError, TypeError, ValueError):
+                except (KeyError, TypeError, ValueError, OverflowError, OSError):
                     warnings += 1
         return SourceResult(rows, [f"Skipped {warnings} malformed listing" + ("s" if warnings != 1 else "")] if warnings else [])
 

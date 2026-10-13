@@ -134,23 +134,23 @@ class SpeedyApplySource:
             if not all((company.text, title.text, location.text)) or not _http_url(application.href):
                 skipped += 1
                 continue
-            employer_url = application.href
+            application_url = application.href
             kind_hint = title.text + (" new graduate" if "NEW_GRAD" in source_url else " internship" if "INTERN" in source_url else "")
             try:
                 jobs.append(JobListing(
                     source="speedyapply",
-                    external_id=hashlib.sha256(employer_url.encode("utf-8")).hexdigest(),
+                    external_id=hashlib.sha256(application_url.encode("utf-8")).hexdigest(),
                     title=title.text,
                     company=company.text,
                     location=location.text,
                     kind=normalize_kind(kind_hint),
-                    url=employer_url,
+                    url=application_url,
                     description="",
                     published_at=None,
                     fetched_at=stamp,
                     remote="remote" in location.text.casefold(),
                     source_url=source_url,
-                    employer_url=employer_url,
+                    application_url=application_url,
                     source_age=age.text or None,
                 ))
             except ValueError:

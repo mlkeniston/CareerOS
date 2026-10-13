@@ -124,6 +124,7 @@ def test_discovery_all_source_failures_preserve_cached_jobs(db):
 def test_speedyapply_repeated_discovery_preserves_identity_and_provenance(db):
     row = '| Acme | Software Intern | Remote | $40/hr | <a href="https://jobs.example.test/1">Apply</a> | 1d |'
     source = SpeedyApplySource(httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=row))))
+    lead = source.fetch(JobQuery()).jobs[0]
     repository = JobRepository(db)
     service = JobDiscoveryService(repository, [source])
     queue = TaskQueue(db)
@@ -136,7 +137,9 @@ def test_speedyapply_repeated_discovery_preserves_identity_and_provenance(db):
 
     assert len(second) == 1
     assert second[0].id == first.id
-    assert second[0].url == second[0].employer_url == "https://jobs.example.test/1"
+    assert second[0].url == lead.application_url == "https://jobs.example.test/1"
+    assert second[0].employer_url is None
+    assert second[0].external_id == lead.external_id
     assert second[0].source_url.startswith("https://github.com/speedyapply/")
     assert second[0].source_age == "1d"
 

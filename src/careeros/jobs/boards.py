@@ -63,10 +63,13 @@ class GreenhouseSource:
                 raw_kind = row.get("metadata") or []
                 raw_kind = " ".join(str(item.get("value", "")) for item in raw_kind if isinstance(item, dict))
                 title = row["title"]
-                job = JobListing("greenhouse:" + board_id, str(row["id"]), title, board_id, location, normalize_kind(raw_kind + " " + title), row["absolute_url"], strip_html(row.get("content") or ""), row.get("updated_at"), datetime.now(timezone.utc).isoformat(), "remote" in location.lower(), original_kind=raw_kind)
+                job = JobListing("greenhouse:" + board_id, str(row["id"]), title, board_id, location, normalize_kind(raw_kind + " " + title), row["absolute_url"], strip_html(row.get("content") or ""), row.get("updated_at"), datetime.now(timezone.utc).isoformat(), "remote" in location.lower(), original_kind=raw_kind,
+                    source_url=f"https://boards-api.greenhouse.io/v1/boards/{board_id}/jobs/{row['id']}",
+                    employer_url=row['absolute_url'], application_url=row['absolute_url'],
+                    requisition_id=str(row['requisition_id']) if row.get('requisition_id') is not None else None)
                 if matches_query(job, query):
                     jobs.append(job)
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
                 bad += 1
         return jobs, bad
 
@@ -97,9 +100,14 @@ class LeverSource:
                 location = categories.get("location") or ""
                 raw_kind = categories.get("commitment") or ""
                 title = row["text"]
-                job = JobListing("lever:" + site_id, str(row["id"]), title, site_id, location, normalize_kind(raw_kind + " " + title), row["hostedUrl"], strip_html(row.get("descriptionPlain") or row.get("description") or ""), None, datetime.now(timezone.utc).isoformat(), "remote" in location.lower(), original_kind=raw_kind)
+                created = row.get('createdAt')
+                published = datetime.fromtimestamp(created / 1000, timezone.utc).isoformat() if isinstance(created, (int, float)) else created if isinstance(created, str) else None
+                job = JobListing("lever:" + site_id, str(row["id"]), title, site_id, location, normalize_kind(raw_kind + " " + title), row["hostedUrl"], strip_html(row.get("descriptionPlain") or row.get("description") or ""), published, datetime.now(timezone.utc).isoformat(), "remote" in location.lower(), original_kind=raw_kind,
+                    source_url=f"https://api.lever.co/v0/postings/{site_id}/{row['id']}",
+                    employer_url=row['hostedUrl'], application_url=row.get('applyUrl'),
+                    requisition_id=str(row['requisitionId']) if row.get('requisitionId') is not None else None)
                 if matches_query(job, query):
                     jobs.append(job)
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
                 bad += 1
         return jobs, bad

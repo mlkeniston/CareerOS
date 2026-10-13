@@ -20,8 +20,8 @@ def test_speedyapply_extracts_company_position_location_and_application_url():
     assert jobs[0].company == "Acme"
     assert jobs[0].title == "Backend Intern"
     assert jobs[0].location == "Boston, MA"
-    assert jobs[0].employer_url == "https://jobs.acme.example/1"
-    assert jobs[0].url == jobs[0].employer_url
+    assert jobs[0].employer_url is None
+    assert jobs[0].url == jobs[0].application_url == "https://jobs.acme.example/1"
     assert jobs[0].source_url.endswith("2027-SWE-College-Jobs")
     assert jobs[0].source_age == "2d"
 
@@ -40,7 +40,8 @@ def test_speedyapply_parses_escaped_pipes_and_location_count_without_using_salar
     assert jobs[0].description == ""
     assert jobs[0].published_at is None
     assert jobs[0].source_age == "3d"
-    assert jobs[0].employer_url == "https://jobs.example.test/apply"
+    assert jobs[0].employer_url is None
+    assert jobs[0].application_url == "https://jobs.example.test/apply"
 
 
 def test_speedyapply_parses_current_five_column_posting_table():
@@ -56,7 +57,8 @@ def test_speedyapply_parses_current_five_column_posting_table():
     assert jobs[0].company == "Acme"
     assert jobs[0].title == "Software Intern"
     assert jobs[0].location == "Boston, MA"
-    assert jobs[0].employer_url == "https://jobs.acme.example/123"
+    assert jobs[0].employer_url is None
+    assert jobs[0].application_url == "https://jobs.acme.example/123"
     assert jobs[0].source_age == "2d"
 
 
@@ -109,7 +111,8 @@ def test_speedyapply_limit_applies_across_files():
     result = source.fetch(JobQuery(limit=1))
 
     assert len(result.jobs) == 1
-    assert result.jobs[0].employer_url == "https://jobs.example.test/README.md"
+    assert result.jobs[0].employer_url is None
+    assert result.jobs[0].application_url == "https://jobs.example.test/README.md"
 
 
 @pytest.mark.parametrize("body", ["", "# Repository layout has changed\nNo table here.", "| Company | Position | Location | Apply |\n| --- | --- | --- | --- |"])
@@ -212,3 +215,73 @@ def test_greenhouse_board_fetches_run_in_parallel_with_a_five_request_cap():
     assert result.jobs == []
     assert client.peak > 1
     assert client.peak <= 5
+
+
+def test_greenhouse_preserves_ats_source_identity_and_update_time(greenhouse_fixture):
+    greenhouse_fixture['jobs'][0]['requisition_id'] = 'GH-REQ-11'
+    job = GreenhouseSource(client_with_json(greenhouse_fixture), ['acme']).fetch(JobQuery()).jobs[0]
+    assert job.url == job.employer_url == job.application_url == 'https://jobs.example/2'
+    assert job.source_url == 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/11'
+    assert job.external_id == '11'
+    assert job.requisition_id == 'GH-REQ-11'
+    assert job.published_at == '2026-10-08'
+    assert job.fetched_at != job.published_at
+
+
+def test_lever_preserves_hosted_and_apply_urls_and_creation_time(lever_fixture):
+    lever_fixture[0]['applyUrl'] = 'https://jobs.example/3/apply'
+    lever_fixture[0]['requisitionId'] = 'LV-REQ-22'
+    job = LeverSource(client_with_json(lever_fixture), ['acme']).fetch(JobQuery()).jobs[0]
+    assert job.url == job.employer_url == 'https://jobs.example/3'
+    assert job.application_url == 'https://jobs.example/3/apply'
+    assert job.source_url == 'https://api.lever.co/v0/postings/acme/22'
+    assert job.external_id == '22'
+    assert job.requisition_id == 'LV-REQ-22'
+    assert job.published_at == '2026-10-08T00:00:00+00:00'
+    assert job.fetched_at != job.published_at
+
+
+def test_arbeitnow_keeps_aggregator_provenance_without_inventing_destination(arbeitnow_fixture):
+    job = ArbeitnowSource(client_with_json(arbeitnow_fixture), max_pages=1).fetch(JobQuery()).jobs[0]
+    assert job.url == 'https://jobs.example/1'
+    assert job.source_url == 'https://www.arbeitnow.com/api/job-board-api?page=1'
+    assert job.employer_url is None
+    assert job.application_url is None
+    assert job.requisition_id is None
+    assert job.published_at == '2026-10-09'
+
+
+def test_arbeitnow_preserves_explicit_destination_fields(arbeitnow_fixture):
+    arbeitnow_fixture['data'][0].update(employer_url='https://employer.example/role',
+        application_url='https://employer.example/role/apply', requisition_id='AB-REQ-1')
+    job = ArbeitnowSource(client_with_json(arbeitnow_fixture), max_pages=1).fetch(JobQuery()).jobs[0]
+    assert job.employer_url == 'https://employer.example/role'
+    assert job.application_url == 'https://employer.example/role/apply'
+    assert job.requisition_id == 'AB-REQ-1'
+
+
+def test_speedyapply_keeps_unvalidated_clickthrough_distinct_from_employer():
+    row = '| Acme | Software Intern | Boston, MA | <a href="https://redirect.example/click?id=123">Apply</a> | 2d |'
+    source = 'https://github.com/speedyapply/2027-SWE-College-Jobs/blob/main/README.md'
+    first = SpeedyApplySource.parse_markdown(row, source)[0][0]
+    second = SpeedyApplySource.parse_markdown(row, source)[0][0]
+    assert first.url == first.application_url == 'https://redirect.example/click?id=123'
+    assert first.employer_url is None
+    assert first.source_url == source
+    assert first.external_id == second.external_id
+    assert first.requisition_id is None
+    assert first.published_at is None
+    assert first.fetched_at
+
+
+def test_arbeitnow_normalizes_unix_source_publication_time(arbeitnow_fixture):
+    arbeitnow_fixture['data'][0]['created_at'] = 1791417600
+    job = ArbeitnowSource(client_with_json(arbeitnow_fixture), max_pages=1).fetch(JobQuery()).jobs[0]
+    assert job.published_at == '2026-10-08T00:00:00+00:00'
+
+
+def test_malformed_lever_timestamp_cannot_stop_valid_listings(lever_fixture):
+    bad = {**lever_fixture[0], 'id': 'bad', 'createdAt': 10 ** 100}
+    result = LeverSource(client_with_json([bad, *lever_fixture]), ['acme']).fetch(JobQuery())
+    assert [job.external_id for job in result.jobs] == ['22']
+    assert result.warnings

@@ -476,3 +476,139 @@ def test_redirect_does_not_forward_session_cookies(verifier_with_mock_transport)
         return httpx.Response(200, text=POSTING, headers={'content-type': 'text/plain'})
     result = verifier_with_mock_transport(handler=serve).verify('https://jobs.example/role', 'Example', 'SWE Intern')
     assert result.status == 'verified'
+
+
+def _jsonld(posting):
+    import json
+    return '<script type="application/ld+json">' + json.dumps(posting) + '</script>'
+
+
+def _structured_posting(**overrides):
+    return {
+        '@type': 'JobPosting', 'title': 'SWE Intern',
+        'hiringOrganization': {'@type': 'Organization', 'name': 'Example, Inc.'},
+        'description': '<p>Build Python APIs. Must be a US citizen.</p>',
+        'identifier': {'@type': 'PropertyValue', 'value': 'REQ-42'},
+        'employmentType': 'INTERN',
+        'jobLocation': {'@type': 'Place', 'address': {'addressLocality': 'Boston', 'addressCountry': 'US'}},
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize('shape', ['single', 'array', 'graph'])
+def test_jsonld_primary_posting_supplies_identity_details_and_fields(verifier_with_mock_transport, shape):
+    posting = _structured_posting()
+    data = posting if shape == 'single' else [posting] if shape == 'array' else {'@graph': [posting]}
+    response = httpx.Response(200, text=_jsonld(data), headers={'content-type': 'text/html'})
+    result = verifier_with_mock_transport(response).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'verified'
+    assert 'Build Python APIs.' in result.text
+    assert 'Must be a US citizen.' in result.text
+    assert result.posting_evidence['identifier'] == 'REQ-42'
+    assert result.posting_evidence['employment_type'] == 'INTERN'
+    assert result.posting_evidence['location']['address']['addressCountry'] == 'US'
+    assert 'JSON-LD' in result.evidence_summary
+    assert not _gates(text=result.text)['eligibility'].passed
+
+
+@pytest.mark.parametrize('company,title', [('OtherCo', 'SWE Intern'), ('Example', 'Data Analyst')])
+def test_jsonld_identity_conflicts_remain_held(verifier_with_mock_transport, company, title):
+    posting = _structured_posting(title=title, hiringOrganization={'name': company})
+    body = _jsonld(posting) + '<main><h1>SWE Intern</h1><p class="company">Example</p></main>'
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'identity_mismatch'
+
+
+def test_multiple_jsonld_jobs_without_primary_url_are_ambiguous(verifier_with_mock_transport):
+    body = _jsonld([_structured_posting(), _structured_posting(title='Data Analyst')])
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'insufficient_detail'
+
+
+def test_multiple_jsonld_jobs_select_only_exact_primary_url(verifier_with_mock_transport):
+    body = _jsonld({'@graph': [
+        _structured_posting(url='https://jobs.example/related'),
+        _structured_posting(url='https://jobs.example/role', title='Data Analyst'),
+    ]})
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'identity_mismatch'
+
+
+@pytest.mark.parametrize('company', ['Example, Inc.', 'Example LLC', 'Example Corporation'])
+def test_visible_primary_company_legal_suffix_is_equivalent(verifier_with_mock_transport, company):
+    body = f'<main><h1>SWE - Intern</h1><p class="company">{company}</p><p>{POSTING}</p></main>'
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'verified'
+
+
+def test_jsonld_cannot_override_conflicting_visible_primary_identity(verifier_with_mock_transport):
+    body = _jsonld(_structured_posting()) + '<main><h1>Data Analyst</h1><p class="company">OtherCo</p></main>'
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'identity_mismatch'
+
+
+def test_malformed_jsonld_block_does_not_hide_valid_primary_posting(verifier_with_mock_transport):
+    body = '<script type="application/ld+json">{bad</script>' + _jsonld(_structured_posting())
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'verified'
+
+
+@pytest.mark.parametrize('body', [
+    '<aside class="related-jobs">' + _jsonld(_structured_posting()) + '</aside>',
+    _jsonld({'@type': 'ItemList', 'itemListElement': [_structured_posting()]}),
+])
+def test_related_jsonld_never_proves_primary_identity(verifier_with_mock_transport, body):
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'held'
+
+
+def test_primary_url_among_multiple_jsonld_jobs_supplies_only_its_description(verifier_with_mock_transport):
+    body = _jsonld([_structured_posting(url='/related', description='Must have 20 years experience.'),
+                   _structured_posting(url='/role')])
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'verified'
+    assert '20 years' not in result.text
+
+
+def test_incomplete_jsonld_uses_visible_primary_detail(verifier_with_mock_transport):
+    body = _jsonld(_structured_posting(description=None)) + '<main><h1>SWE Intern</h1><p class="company">Example</p><p>' + POSTING + '</p></main>'
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'verified'
+    assert POSTING in result.text
+    assert 'Visible' in result.evidence_summary
+
+
+@pytest.mark.parametrize('title,expected', [('C++ Intern', 'C Intern'), ('C# Intern', 'C Intern')])
+def test_language_symbols_are_not_equivalent_titles(verifier_with_mock_transport, title, expected):
+    response = httpx.Response(200, text=_jsonld(_structured_posting(title=title)), headers={'content-type': 'text/html'})
+    result = verifier_with_mock_transport(response).verify('https://jobs.example/role', 'Example', expected)
+    assert result.outcome == 'identity_mismatch'
+
+
+def test_unicode_company_names_cannot_collapse_into_equivalent_empty_identity(verifier_with_mock_transport):
+    response = httpx.Response(200, text=_jsonld(_structured_posting(hiringOrganization={'name': '東京'})), headers={'content-type': 'text/html'})
+    result = verifier_with_mock_transport(response).verify('https://jobs.example/role', '大阪', 'SWE Intern')
+    assert result.outcome == 'identity_mismatch'
+
+
+def test_company_suffix_normalization_does_not_allow_distinct_brands(verifier_with_mock_transport):
+    response = httpx.Response(200, text=_jsonld(_structured_posting(hiringOrganization={'name': 'Example Labs Inc.'})), headers={'content-type': 'text/html'})
+    result = verifier_with_mock_transport(response).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'identity_mismatch'
+
+
+def test_deep_jsonld_graph_is_held_without_crashing(verifier_with_mock_transport):
+    # Build manually: JSON serialization itself imposes a Python recursion cap.
+    body = '<script type="application/ld+json">' + '{"@graph":[' * 600 + '{}' + ']}' * 600 + '</script>'
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'held'

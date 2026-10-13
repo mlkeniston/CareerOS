@@ -42,6 +42,8 @@ class JobListing:
     source_url: str | None = None
     employer_url: str | None = None
     source_age: str | None = None
+    application_url: str | None = None
+    requisition_id: str | None = None
 
     def __post_init__(self):
         for name in ("source", "external_id", "title", "company"):

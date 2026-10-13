@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import re
 import socket
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -31,6 +33,7 @@ class VerificationResult:
     outcome: VerificationOutcome | None = None
     checked_url: str | None = None
     evidence_summary: str = ''
+    posting_evidence: dict = field(default_factory=dict)
 
     def __post_init__(self):
         # Existing positional callers still supply the compatibility gate status.
@@ -106,6 +109,7 @@ class _Text(HTMLParser):
         self.headings = []
         self.companies = []
         self.paragraphs = []
+        self.jsonld = []
         self._next_scope = 0
 
     def handle_starttag(self, tag, attrs):
@@ -128,7 +132,10 @@ class _Text(HTMLParser):
                 raise ValueError('Employer HTML nesting is too deep')
             self.stack.append({'tag': tag, 'attrs': attrs, 'excluded': excluded, 'hidden': hidden,
                                'anchor': parent.get('anchor', False) or tag == 'a',
-                               'scope': scope, 'parts': [], 'plain': []})
+                               'scope': scope, 'parts': [], 'plain': [],
+                               'jsonld': tag == 'script' and not parent.get('excluded', False)
+                                         and (attrs.get('type') or '').lower() == 'application/ld+json',
+                               'raw': []})
 
     def handle_endtag(self, tag):
         for index in range(len(self.stack) - 1, -1, -1):
@@ -156,10 +163,17 @@ class _Text(HTMLParser):
                 frame['plain'].append(data)
 
     def handle_data(self, data):
+        if self.stack and self.stack[-1].get('jsonld'):
+            self.stack[-1]['raw'].append(data)
         self._append(data)
 
     def _finish_element(self):
         frame = self.stack.pop()
+        if frame['jsonld']:
+            try:
+                self.jsonld.append(json.loads(''.join(frame['raw'])))
+            except (ValueError, RecursionError):
+                pass
         if frame['excluded']:
             return
         scope, tag = frame['scope'], frame['tag']
@@ -199,18 +213,91 @@ class _Text(HTMLParser):
 
 
 def _normalize(value: str) -> str:
-    return re.sub(r'[^a-z0-9]+', ' ', value.casefold()).strip()
+    # Preserve Unicode names and language symbols: C, C++ and C# are distinct.
+    value = unicodedata.normalize('NFKC', value).casefold().replace('_', ' ')
+    return re.sub(r'[^\w+#]+', ' ', value).strip()
+
+
+def _company(value: str) -> str:
+    normalized = _normalize(value)
+    return re.sub(r' (?:inc|incorporated|llc|l l c|ltd|limited|corp|corporation)$', '', normalized)
+
+
+def _heading_matches(heading, company, title):
+    normalized = _normalize(heading)
+    if normalized == title:
+        return True
+    return (normalized.startswith(title + ' at ') and _company(normalized[len(title) + 4:]) == company
+            or normalized.startswith(title + ' ') and _company(normalized[len(title) + 1:]) == company
+            or normalized.endswith(' ' + title) and _company(normalized[:-len(title) - 1]) == company)
+
+
+def _jobpostings(values, depth=0):
+    # Traverse only JSON-LD document roots/@graph. ItemList/related children are
+    # never primary posting evidence, even if they happen to match expected text.
+    if depth > 32:
+        return
+    for value in values:
+        if isinstance(value, list):
+            yield from _jobpostings(value, depth + 1)
+        elif isinstance(value, dict):
+            types = value.get('@type', [])
+            if 'JobPosting' in ([types] if isinstance(types, str) else types if isinstance(types, list) else []):
+                yield value
+            graph = value.get('@graph')
+            if isinstance(graph, (list, dict)):
+                yield from _jobpostings([graph], depth + 1)
+
+
+def _select_posting(values, final_url):
+    postings = list(_jobpostings(values))
+    exact = []
+    for posting in postings:
+        reference = posting.get('url') or posting.get('@id')
+        if isinstance(reference, str):
+            try:
+                if _safe_url(urljoin(final_url, reference))[0] == final_url:
+                    exact.append(posting)
+            except (ValueError, UnicodeError):
+                pass
+    if len(exact) == 1:
+        return exact[0], False
+    if len(postings) == 1:
+        # An explicit different posting URL cannot identify this document.
+        if postings[0].get('url') or postings[0].get('@id'):
+            return None, True
+        return postings[0], False
+    return None, bool(postings)
+
+
+def _posting_fields(posting):
+    organization = posting.get('hiringOrganization')
+    company = organization.get('name') if isinstance(organization, dict) else organization
+    identifier = posting.get('identifier')
+    identifier = identifier.get('value') if isinstance(identifier, dict) else identifier
+    description = posting.get('description')
+    parser = _Text()
+    parser.feed(description if isinstance(description, str) else '')
+    parser.finish()
+    return {
+        'title': posting.get('title') if isinstance(posting.get('title'), str) else '',
+        'company': company if isinstance(company, str) else '',
+        'description': ''.join(parser.full_parts).strip(),
+        'identifier': str(identifier) if isinstance(identifier, (str, int)) else None,
+        'employment_type': posting.get('employmentType'),
+        'location': posting.get('jobLocation'),
+    }
 
 
 def _primary_matches(text, headings, companies, paragraphs, company, title):
-    company, title = _normalize(company), _normalize(title)
+    company, title = _company(company), _normalize(title)
     if not company or not title or text is None:
         return False
     allowed_headings = {title, f'{title} at {company}', f'{title} {company}', f'{company} {title}'}
-    if headings and any(_normalize(heading) not in allowed_headings for heading in headings):
+    if headings and any(not _heading_matches(heading, company, title) for heading in headings):
         return False
     if companies:
-        company_matches = all(_normalize(value) == company for value in companies)
+        company_matches = all(_company(value) == company for value in companies)
     elif any(_normalize(heading) != title and _contains(heading, company) for heading in headings):
         company_matches = True
     else:
@@ -258,10 +345,10 @@ class EmployerPostingVerifier:
     def verify(self, url: str, expected_company: str, expected_title: str) -> VerificationResult:
         stamp, checked_url, final_url = now(), None, None
 
-        def result(outcome: VerificationOutcome, reason, text='', fingerprint=None):
+        def result(outcome: VerificationOutcome, reason, text='', fingerprint=None, evidence=None, summary=None):
             return VerificationResult(
                 'verified' if outcome == 'verified' else 'held', reason, final_url, stamp,
-                text, fingerprint, outcome, checked_url, reason,
+                text, fingerprint, outcome, checked_url, summary or reason, evidence or {},
             )
 
         try:
@@ -336,20 +423,34 @@ class EmployerPostingVerifier:
                     raw = body.decode('utf-8', errors='replace')
                     identity_text = raw
                     headings, companies, paragraphs = [], [], []
+                    posting, ambiguous = None, False
                     if content_type != 'text/plain':
                         parser = _Text()
                         parser.feed(raw)
                         parser.close()
                         parser.finish()
+                        posting, ambiguous = _select_posting(parser.jsonld, final_url)
                         identity_text, headings, companies, paragraphs, raw = parser.primary()
                     text = '\n'.join(' '.join(line.split()) for line in raw.splitlines() if line.strip())
+                    evidence = _posting_fields(posting) if posting else {}
+                    if evidence:
+                        text = '\n'.join(filter(None, [evidence['title'], evidence['company'], evidence['description'], text]))
                     if re.search(r'(?i)\b((?:position|job|role|listing|posting)(?: posting| listing)? (?:is |has been |has )?(?:closed|expired|filled)|no longer (?:accepting applications|available)|applications? (?:are |is )?closed|position (?:has been |is )?filled)\b', text):
-                        return result('closed', 'Employer listing is closed or expired', text, fingerprint)
-                    if not text or identity_text is None:
+                        return result('closed', 'Employer listing is closed or expired', text, fingerprint, evidence)
+                    if ambiguous or not text or identity_text is None:
                         return result('insufficient_detail', 'Employer page has insufficient or ambiguous primary posting detail', text, fingerprint)
+                    if evidence:
+                        structured_conflict = (evidence['title'] and _normalize(evidence['title']) != _normalize(expected_title)
+                            or evidence['company'] and _company(evidence['company']) != _company(expected_company))
+                        visible_conflict = (any(not _heading_matches(value, _company(expected_company), _normalize(expected_title)) for value in headings)
+                            or any(_company(value) != _company(expected_company) for value in companies))
+                        if structured_conflict or visible_conflict:
+                            return result('identity_mismatch', 'Employer primary posting does not match the company and role', text, fingerprint, evidence, 'Primary JSON-LD JobPosting conflicts with expected or visible identity')
+                        if evidence['title'] and evidence['company'] and evidence['description']:
+                            return result('verified', 'Employer primary company and role match', text, fingerprint, evidence, 'Primary JSON-LD JobPosting identity and description')
                     if not _primary_matches(identity_text, headings, companies, paragraphs, expected_company, expected_title):
-                        return result('identity_mismatch', 'Employer primary posting does not match the company and role', text, fingerprint)
-                    return result('verified', 'Employer primary company and role match', text, fingerprint)
+                        return result('identity_mismatch', 'Employer primary posting does not match the company and role', text, fingerprint, evidence)
+                    return result('verified', 'Employer primary company and role match', text, fingerprint, evidence, 'Visible primary posting' + (' with incomplete JSON-LD JobPosting' if evidence else ''))
         except (OSError, httpx.TransportError):
             return result('transient_error', 'Employer page has a temporary network or timeout error')
         except (ValueError, UnicodeError, httpx.HTTPError):
