@@ -28,7 +28,7 @@ careeros = "careeros.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-careeros = ["migrations/*.sql", "static/*"]
+careeros = ["migrations/*.sql", "static/*", "sandbox/Dockerfile"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

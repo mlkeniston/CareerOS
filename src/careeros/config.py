@@ -19,6 +19,7 @@ class Settings:
     openai_api_key: str | None = None
     greenhouse_boards: tuple[str, ...] = ()
     lever_sites: tuple[str, ...] = ()
+    sandbox_image: str = "careeros-sandbox:1"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -45,6 +46,7 @@ class Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             greenhouse_boards=_csv_ids(os.getenv("CAREEROS_GREENHOUSE_BOARDS", "")),
             lever_sites=_csv_ids(os.getenv("CAREEROS_LEVER_SITES", "")),
+            sandbox_image=os.getenv("CAREEROS_SANDBOX_IMAGE", "careeros-sandbox:1"),
         )
 
 

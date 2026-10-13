@@ -64,6 +64,17 @@ LinkedIn Outreach uses the same saved target roles, preferred locations, and res
 
 The portfolio worker can stage a project proposal after the job feed contains recurring technology skill evidence. It uses the local planner, and its files remain staged for your review. CareerOS does not run generated code or apply proposal files without your approval.
 
+## Project QA sandbox
+
+Project checks run only inside a local Docker container with networking disabled, a read-only project mount, resource limits, and a non-root user. Install Docker Desktop, then prepare and check the image:
+
+```bash
+careeros sandbox prepare
+careeros sandbox check
+```
+
+If Docker or the sandbox image is unavailable, project QA stays held. CareerOS never falls back to running generated project code on macOS.
+
 ## Optional OpenAI planner
 
 1. Copy `.env.example` to `.env`.
