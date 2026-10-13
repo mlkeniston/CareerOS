@@ -10,7 +10,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -249,6 +249,17 @@ def _jobpostings(values, depth=0):
                 yield from _jobpostings([graph], depth + 1)
 
 
+def _posting_identity_url(url):
+    # Strip a fixed analytics allowlist, never generic source/ref or requisition
+    # selectors. Keep blank values, duplicate selectors and their order intact.
+    tracking = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+                'utm_id', 'gclid', 'fbclid', 'msclkid'}
+    parts = urlsplit(_safe_url(url)[0])
+    query = [(name, value) for name, value in parse_qsl(parts.query, keep_blank_values=True, max_num_fields=1000)
+             if name not in tracking]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ''))
+
+
 def _select_posting(values, final_url):
     postings = list(_jobpostings(values))
     exact = []
@@ -256,7 +267,7 @@ def _select_posting(values, final_url):
         reference = posting.get('url') or posting.get('@id')
         if isinstance(reference, str):
             try:
-                if _safe_url(urljoin(final_url, reference))[0] == final_url:
+                if _posting_identity_url(urljoin(final_url, reference)) == _posting_identity_url(final_url):
                     exact.append(posting)
             except (ValueError, UnicodeError):
                 pass

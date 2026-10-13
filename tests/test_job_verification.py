@@ -612,3 +612,43 @@ def test_deep_jsonld_graph_is_held_without_crashing(verifier_with_mock_transport
     result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
         'https://jobs.example/role', 'Example', 'SWE Intern')
     assert result.status == 'held'
+
+
+@pytest.mark.parametrize('checked,canonical', [
+    ('https://jobs.example/role?utm_source=github', 'https://jobs.example/role'),
+    ('https://jobs.example/role?utm_medium=jobboard&utm_campaign=interns&utm_content=card&utm_term=swe&utm_id=fall', '/role'),
+    ('https://jobs.example/role?gclid=123&fbclid=456&msclkid=789', '/role'),
+    ('https://jobs.example/role', '/role?utm_source=github'),
+    ('https://jobs.example/role?gh_jid=42&utm_source=github', '/role?gh_jid=42'),
+])
+def test_jsonld_canonical_url_ignores_known_tracking_only(verifier_with_mock_transport, checked, canonical):
+    body = _jsonld(_structured_posting(url=canonical)) + '<main><h1>SWE Intern</h1><p class="company">Example</p></main>'
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        checked, 'Example', 'SWE Intern')
+    assert result.outcome == 'verified'
+    assert result.checked_url == result.final_url == checked
+
+
+@pytest.mark.parametrize('checked,canonical', [
+    ('https://jobs.example/role?gh_jid=42&utm_source=github', '/role?gh_jid=99'),
+    ('https://jobs.example/role?jobId=42', '/role'),
+    ('https://jobs.example/role?requisition_id=42', '/role?requisition_id=99'),
+    ('https://jobs.example/role?source=internship', '/role'),
+    ('https://jobs.example/role?ref=other-role', '/role'),
+    ('https://jobs.example/role?utm_job_id=42', '/role'),
+    ('https://jobs.example/role?jobId=', '/role'),
+    ('https://jobs.example/role?jobId=42&jobId=99', '/role?jobId=42'),
+])
+def test_jsonld_canonical_url_preserves_role_and_unknown_query_parameters(verifier_with_mock_transport, checked, canonical):
+    body = _jsonld(_structured_posting(url=canonical)) + '<main><h1>SWE Intern</h1><p class="company">Example</p></main>'
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        checked, 'Example', 'SWE Intern')
+    assert result.outcome == 'insufficient_detail'
+
+
+def test_tracking_equivalence_cannot_select_between_two_primary_candidates(verifier_with_mock_transport):
+    body = _jsonld([_structured_posting(url='/role?utm_source=github'),
+                   _structured_posting(url='/role?utm_source=feed')])
+    result = verifier_with_mock_transport(httpx.Response(200, text=body, headers={'content-type': 'text/html'})).verify(
+        'https://jobs.example/role?utm_medium=feed', 'Example', 'SWE Intern')
+    assert result.outcome == 'insufficient_detail'
