@@ -44,7 +44,7 @@ def test_verifier_holds_uncertain_or_unsafe_response(verifier_with_mock_transpor
     assert reason in result.reason.lower()
 
 
-@pytest.mark.parametrize('destination', ['http://127.0.0.1/admin', 'https://public.example/role', 'http://[::1]/'])
+@pytest.mark.parametrize('destination', ['http://127.0.0.1/admin', 'http://[::1]/'])
 def test_verifier_holds_private_redirect(verifier_with_mock_transport, destination):
     calls = []
     def redirect(request):
@@ -200,7 +200,8 @@ def test_common_closed_employer_messages_are_held(verifier_with_mock_transport, 
     assert 'closed' in result.reason.lower() or 'expired' in result.reason.lower()
 
 
-def test_distinct_hosts_on_one_ip_receive_separate_tls_checks(monkeypatch):
+@pytest.mark.parametrize('redirect_first', [False, True])
+def test_distinct_hosts_on_one_ip_receive_separate_tls_checks(monkeypatch, redirect_first):
     """Exercise the production HTTPX/httpcore pool with only the network faked."""
     import ssl
     from httpcore._backends.sync import SyncBackend
@@ -219,6 +220,9 @@ def test_distinct_hosts_on_one_ip_receive_separate_tls_checks(monkeypatch):
 
         def write(self, buffer, timeout=None):
             if b'GET ' in buffer:
+                if redirect_first and handshakes[-1] == 'one.example':
+                    self.response = b'HTTP/1.1 302 Found\r\nLocation: https://two.example/role\r\nContent-Length: 0\r\n\r\n'
+                    return
                 body = POSTING.encode()
                 self.response = (b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: '
                                  + str(len(body)).encode() + b'\r\n\r\n' + body)
@@ -244,8 +248,8 @@ def test_distinct_hosts_on_one_ip_receive_separate_tls_checks(monkeypatch):
     try:
         assert verifier.verify('https://one.example/role', 'Example', 'SWE Intern').status == 'verified'
         assert verifier.verify('https://two.example/role', 'Example', 'SWE Intern').status == 'verified'
-        assert handshakes == ['one.example', 'two.example']
-        assert connections == [('93.184.216.34', 443), ('93.184.216.34', 443)]
+        assert handshakes == (['one.example', 'two.example', 'two.example'] if redirect_first else ['one.example', 'two.example'])
+        assert connections == [('93.184.216.34', 443)] * (3 if redirect_first else 2)
         assert all(stream.closed for stream in streams)
     finally:
         verifier.close()
@@ -345,3 +349,130 @@ def test_inert_closure_and_requirements_never_become_employer_evidence(verifier_
     assert 'closed' not in result.text
     assert 'citizen' not in result.text
     assert _gates(text=result.text)['eligibility'].passed
+
+
+def test_verification_outcome_keeps_legacy_gate_accessors(verifier_with_mock_transport):
+    result = verifier_with_mock_transport().verify('https://jobs.example/role#fragment', 'Example', 'SWE Intern')
+    assert result.outcome == 'verified'
+    assert result.verified is True
+    assert result.checked_url == 'https://jobs.example/role'
+    assert result.final_url == result.checked_url
+    assert result.evidence_summary and result.fingerprint and result.checked_at
+    legacy = VerificationResult('held', 'legacy hold', None, 'now')
+    assert legacy.outcome == 'insufficient_detail'
+    assert legacy.verified is False
+
+
+@pytest.mark.parametrize('destination', ['/final#anchor', 'https://other.example:8443/final'])
+def test_public_redirect_resolves_and_pins_every_hop(destination):
+    resolutions, requests = [], []
+    def resolve(host, port):
+        resolutions.append((host, port))
+        return ['93.184.216.34'] if host == 'jobs.example' else ['1.1.1.1']
+    def serve(request):
+        requests.append((str(request.url), request.headers['host'], request.extensions['sni_hostname']))
+        if request.url.path == '/role':
+            return httpx.Response(302, headers={'location': destination})
+        return httpx.Response(200, text=POSTING, headers={'content-type': 'text/plain'})
+    verifier = EmployerPostingVerifier(transport=httpx.MockTransport(serve), resolver=resolve)
+    try:
+        result = verifier.verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    finally:
+        verifier.close()
+    assert result.status == 'verified'
+    assert result.outcome == 'verified'
+    assert result.checked_url == 'https://jobs.example/role'
+    if destination.startswith('/'):
+        assert result.final_url == 'https://jobs.example/final'
+        assert resolutions == [('jobs.example', 443), ('jobs.example', 443)]
+        assert requests[-1] == ('https://93.184.216.34/final', 'jobs.example', 'jobs.example')
+    else:
+        assert result.final_url == 'https://other.example:8443/final'
+        assert resolutions == [('jobs.example', 443), ('other.example', 8443)]
+        assert requests[-1] == ('https://1.1.1.1:8443/final', 'other.example:8443', 'other.example')
+
+
+@pytest.mark.parametrize('redirect_count,expected,request_count', [(5, 'verified', 6), (6, 'unsafe_destination', 6)])
+def test_redirect_hop_boundary(verifier_with_mock_transport, redirect_count, expected, request_count):
+    requests = []
+    def serve(request):
+        requests.append(request.url.path)
+        step = int(request.url.path.strip('/'))
+        if step < redirect_count:
+            return httpx.Response(307, headers={'location': f'/{step + 1}'})
+        return httpx.Response(200, text=POSTING, headers={'content-type': 'text/plain'})
+    result = verifier_with_mock_transport(handler=serve).verify('https://jobs.example/0', 'Example', 'SWE Intern')
+    assert result.outcome == expected
+    assert len(requests) == request_count
+    assert result.status == ('verified' if expected == 'verified' else 'held')
+
+
+@pytest.mark.parametrize('destination', ['/role#loop', 'http://public.example/final',
+    'https://user:secret@public.example/final', 'file:///etc/passwd', '//127.0.0.1/admin'])
+def test_unsafe_redirect_never_reaches_second_request(verifier_with_mock_transport, destination):
+    requests = []
+    def serve(request):
+        requests.append(request)
+        return httpx.Response(302, headers={'location': destination})
+    result = verifier_with_mock_transport(handler=serve).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.outcome == 'unsafe_destination'
+    assert result.status == 'held'
+    assert len(requests) == 1
+    assert result.final_url == 'https://jobs.example/role'
+
+
+@pytest.mark.parametrize('answers', [['127.0.0.1'], ['10.0.0.1'], ['192.0.2.1'],
+    ['93.184.216.34', '192.168.1.1'], []])
+def test_redirect_dns_must_be_entirely_public(answers):
+    requests = []
+    def serve(request):
+        requests.append(request)
+        return httpx.Response(302, headers={'location': 'https://other.example/final'})
+    verifier = EmployerPostingVerifier(transport=httpx.MockTransport(serve),
+        resolver=lambda host, port: ['93.184.216.34'] if host == 'jobs.example' else answers)
+    try:
+        result = verifier.verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    finally:
+        verifier.close()
+    assert result.outcome == 'unsafe_destination'
+    assert result.status == 'held'
+    assert len(requests) == 1
+    assert result.final_url == 'https://jobs.example/role'
+
+
+@pytest.mark.parametrize('status,outcome', [(403, 'access_restricted'), (404, 'not_found'),
+    (410, 'not_found'), (429, 'transient_error'), (500, 'transient_error'), (503, 'transient_error')])
+def test_http_failure_classification(verifier_with_mock_transport, status, outcome):
+    result = verifier_with_mock_transport(httpx.Response(status)).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'held'
+    assert result.outcome == outcome
+    assert str(status) in result.reason
+
+
+@pytest.mark.parametrize('error', [httpx.ReadTimeout, httpx.ConnectError])
+def test_transport_failures_are_transient(verifier_with_mock_transport, error):
+    def fail(request):
+        raise error('Temporary failure', request=request)
+    result = verifier_with_mock_transport(handler=fail).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'held'
+    assert result.outcome == 'transient_error'
+
+
+@pytest.mark.parametrize('body,outcome', [(POSTING + ' This position is closed.', 'closed'),
+    ('OtherCo Data Analyst', 'identity_mismatch'), ('', 'insufficient_detail')])
+def test_evidence_failure_classification(verifier_with_mock_transport, body, outcome):
+    result = verifier_with_mock_transport(httpx.Response(200, text=body,
+        headers={'content-type': 'text/plain'})).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'held'
+    assert result.outcome == outcome
+
+
+def test_redirect_does_not_forward_session_cookies(verifier_with_mock_transport):
+    def serve(request):
+        assert 'cookie' not in request.headers
+        assert 'authorization' not in request.headers
+        if request.url.path == '/role':
+            return httpx.Response(302, headers={'location': '/final', 'set-cookie': 'session=secret; Path=/'})
+        return httpx.Response(200, text=POSTING, headers={'content-type': 'text/plain'})
+    result = verifier_with_mock_transport(handler=serve).verify('https://jobs.example/role', 'Example', 'SWE Intern')
+    assert result.status == 'verified'

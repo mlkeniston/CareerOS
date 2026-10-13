@@ -8,13 +8,16 @@ import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Literal
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
 from careeros.queue import now
 
 MAX_BODY = 1024 * 1024
+MAX_REDIRECTS = 5
+VerificationOutcome = Literal['verified', 'closed', 'identity_mismatch', 'insufficient_detail',
+                              'access_restricted', 'not_found', 'transient_error', 'unsafe_destination']
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,22 @@ class VerificationResult:
     checked_at: str
     text: str = ''
     fingerprint: str | None = None
+    outcome: VerificationOutcome | None = None
+    checked_url: str | None = None
+    evidence_summary: str = ''
+
+    def __post_init__(self):
+        # Existing positional callers still supply the compatibility gate status.
+        if self.outcome is None:
+            object.__setattr__(self, 'outcome', 'verified' if self.status == 'verified' else 'insufficient_detail')
+        elif self.outcome != 'verified':
+            object.__setattr__(self, 'status', 'held')
+        elif self.status != 'verified':
+            object.__setattr__(self, 'outcome', 'insufficient_detail')
+
+    @property
+    def verified(self) -> bool:
+        return self.status == 'verified' and self.outcome == 'verified'
 
 
 def _resolve(host: str, port: int) -> list[str]:
@@ -217,71 +236,121 @@ def _contains(text: str, value: str) -> bool:
     return bool(term) and f' {term} ' in f' {_normalize(text)} '
 
 
+def _unauthenticated_request(request: httpx.Request) -> None:
+    # HTTPX collects response cookies automatically, including across pinned IP
+    # origins. Public posting checks must never forward those session credentials.
+    for header in ('cookie', 'authorization', 'proxy-authorization'):
+        request.headers.pop(header, None)
+
+
 class EmployerPostingVerifier:
     def __init__(self, *, transport=None, resolver=None):
         self.resolver = resolver or _resolve
         self.client = httpx.Client(transport=transport, trust_env=False, follow_redirects=False,
                                   # A pinned IP origin must not pool TLS authenticated for another hostname.
                                   http2=False, limits=httpx.Limits(max_keepalive_connections=0),
-                                  timeout=httpx.Timeout(12, connect=4), headers={'User-Agent': 'CareerOS/0.1', 'Accept-Encoding': 'identity'})
+                                  timeout=httpx.Timeout(12, connect=4), headers={'User-Agent': 'CareerOS/0.1', 'Accept-Encoding': 'identity'},
+                                  event_hooks={'request': [_unauthenticated_request]})
 
     def close(self):
         self.client.close()
 
     def verify(self, url: str, expected_company: str, expected_title: str) -> VerificationResult:
-        stamp, sanitized = now(), None
-        def held(reason, text='', fingerprint=None):
-            return VerificationResult('held', reason, sanitized, stamp, text, fingerprint)
+        stamp, checked_url, final_url = now(), None, None
+
+        def result(outcome: VerificationOutcome, reason, text='', fingerprint=None):
+            return VerificationResult(
+                'verified' if outcome == 'verified' else 'held', reason, final_url, stamp,
+                text, fingerprint, outcome, checked_url, reason,
+            )
+
         try:
-            sanitized, host, port = _safe_url(url)
-            addresses = self.resolver(host, port)
-            if not addresses or any(not _public(address) for address in addresses):
-                return held('Private/reserved DNS destination is blocked')
-            # Pin the validated address for the actual connection to prevent DNS rebinding.
-            # TLS still validates the employer hostname; Host preserves virtual hosting.
-            target = httpx.URL(sanitized).copy_with(host=addresses[0])
-            authority = urlsplit(sanitized).netloc
-            with self.client.stream('GET', target, headers={'Host': authority, 'Connection': 'close'},
-                                    extensions={'sni_hostname': host}, follow_redirects=False) as response:
-                if 300 <= response.status_code < 400:
-                    destination = response.headers.get('location', '')
-                    try:
-                        destination = _safe_url(destination)[0]
-                    except ValueError:
-                        destination = '(unsafe or relative destination)'
-                    return held(f'Redirect blocked: {destination[:180]}')
-                if response.status_code != 200:
-                    return held(f'Employer page returned HTTP {response.status_code}')
-                content_type = response.headers.get('content-type', '').split(';')[0].strip().lower()
-                if content_type not in {'text/html', 'text/plain', 'application/xhtml+xml'}:
-                    return held('Employer page has unsupported content type')
-                if response.headers.get('content-encoding', 'identity').strip().lower() != 'identity':
-                    return held('Employer page uses unsupported content encoding')
-                declared = response.headers.get('content-length')
-                if declared and int(declared) > MAX_BODY:
-                    return held('Employer page body is too large')
-                body = bytearray()
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    if len(body) + len(chunk) > MAX_BODY:
-                        return held('Employer page body is too large')
-                    body.extend(chunk)
-                fingerprint = hashlib.sha256(body).hexdigest()
-                raw = body.decode('utf-8', errors='replace')
-                identity_text = raw
-                headings, companies, paragraphs = [], [], []
-                if content_type != 'text/plain':
-                    parser = _Text()
-                    parser.feed(raw)
-                    parser.close()
-                    parser.finish()
-                    identity_text, headings, companies, paragraphs, raw = parser.primary()
-                text = '\n'.join(' '.join(line.split()) for line in raw.splitlines() if line.strip())
-                if re.search(r'(?i)\b((?:position|job|role|listing|posting)(?: posting| listing)? (?:is |has been |has )?(?:closed|expired|filled)|no longer (?:accepting applications|available)|applications? (?:are |is )?closed|position (?:has been |is )?filled)\b', text):
-                    return held('Employer listing is closed or expired', text, fingerprint)
-                if identity_text is None:
-                    return held('Employer page has ambiguous primary postings', text, fingerprint)
-                if not _primary_matches(identity_text, headings, companies, paragraphs, expected_company, expected_title):
-                    return held('Employer primary posting does not match the company and role', text, fingerprint)
-                return VerificationResult('verified', 'Employer primary company and role match', sanitized, stamp, text, fingerprint)
-        except (ValueError, UnicodeError, OSError, httpx.HTTPError):
-            return held('Employer page could not be safely verified')
+            current, host, port = _safe_url(url)
+            checked_url = current
+        except (ValueError, UnicodeError):
+            return result('unsafe_destination', 'Employer URL could not be safely verified')
+
+        visited = set()
+        redirects = 0
+        try:
+            while True:
+                if current in visited:
+                    return result('unsafe_destination', 'Employer redirect loop is blocked')
+                visited.add(current)
+                try:
+                    addresses = self.resolver(host, port)
+                    if not addresses or any(not _public(address) for address in addresses):
+                        return result('unsafe_destination', 'Private/reserved DNS destination is blocked')
+                except (ValueError, UnicodeError):
+                    return result('unsafe_destination', 'Employer DNS destination is invalid')
+                final_url = current
+                # Pin each hop to its validated IP. SNI keeps hostname certificate
+                # validation and Host keeps virtual hosting; no pooled cross-host TLS.
+                target = httpx.URL(current).copy_with(host=addresses[0])
+                authority = urlsplit(current).netloc
+                with self.client.stream('GET', target, headers={'Host': authority, 'Connection': 'close'},
+                                        extensions={'sni_hostname': host}, follow_redirects=False) as response:
+                    if 300 <= response.status_code < 400:
+                        if redirects >= MAX_REDIRECTS:
+                            return result('unsafe_destination', 'Employer redirect limit exceeded')
+                        destination = response.headers.get('location', '')
+                        try:
+                            if not destination.strip():
+                                raise ValueError('Missing redirect destination')
+                            # Validate the reference before urljoin can strip controls.
+                            if any(ord(c) < 32 for c in destination) or '\\' in destination:
+                                raise ValueError('Invalid redirect destination')
+                            resolved, next_host, next_port = _safe_url(urljoin(current, destination))
+                            if urlsplit(current).scheme == 'https' and urlsplit(resolved).scheme != 'https':
+                                raise ValueError('HTTPS downgrade')
+                        except (ValueError, UnicodeError):
+                            return result('unsafe_destination', 'Unsafe employer redirect destination is blocked')
+                        current, host, port = resolved, next_host, next_port
+                        redirects += 1
+                        continue
+                    status = response.status_code
+                    if status != 200:
+                        if status in {401, 403}:
+                            outcome = 'access_restricted'
+                        elif status in {404, 410}:
+                            outcome = 'not_found'
+                        elif status == 429 or 500 <= status < 600:
+                            outcome = 'transient_error'
+                        else:
+                            outcome = 'insufficient_detail'
+                        return result(outcome, f'Employer page returned HTTP {status}')
+                    content_type = response.headers.get('content-type', '').split(';')[0].strip().lower()
+                    if content_type not in {'text/html', 'text/plain', 'application/xhtml+xml'}:
+                        return result('insufficient_detail', 'Employer page has unsupported content type')
+                    if response.headers.get('content-encoding', 'identity').strip().lower() != 'identity':
+                        return result('insufficient_detail', 'Employer page uses unsupported content encoding')
+                    declared = response.headers.get('content-length')
+                    if declared and int(declared) > MAX_BODY:
+                        return result('insufficient_detail', 'Employer page body is too large')
+                    body = bytearray()
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        if len(body) + len(chunk) > MAX_BODY:
+                            return result('insufficient_detail', 'Employer page body is too large')
+                        body.extend(chunk)
+                    fingerprint = hashlib.sha256(body).hexdigest()
+                    raw = body.decode('utf-8', errors='replace')
+                    identity_text = raw
+                    headings, companies, paragraphs = [], [], []
+                    if content_type != 'text/plain':
+                        parser = _Text()
+                        parser.feed(raw)
+                        parser.close()
+                        parser.finish()
+                        identity_text, headings, companies, paragraphs, raw = parser.primary()
+                    text = '\n'.join(' '.join(line.split()) for line in raw.splitlines() if line.strip())
+                    if re.search(r'(?i)\b((?:position|job|role|listing|posting)(?: posting| listing)? (?:is |has been |has )?(?:closed|expired|filled)|no longer (?:accepting applications|available)|applications? (?:are |is )?closed|position (?:has been |is )?filled)\b', text):
+                        return result('closed', 'Employer listing is closed or expired', text, fingerprint)
+                    if not text or identity_text is None:
+                        return result('insufficient_detail', 'Employer page has insufficient or ambiguous primary posting detail', text, fingerprint)
+                    if not _primary_matches(identity_text, headings, companies, paragraphs, expected_company, expected_title):
+                        return result('identity_mismatch', 'Employer primary posting does not match the company and role', text, fingerprint)
+                    return result('verified', 'Employer primary company and role match', text, fingerprint)
+        except (OSError, httpx.TransportError):
+            return result('transient_error', 'Employer page has a temporary network or timeout error')
+        except (ValueError, UnicodeError, httpx.HTTPError):
+            return result('insufficient_detail', 'Employer page could not be safely verified')
