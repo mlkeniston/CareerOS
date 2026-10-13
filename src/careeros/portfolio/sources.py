@@ -131,8 +131,8 @@ class _HTTPProjectSource:
                 )
         except httpx.TimeoutException as exc:
             raise RetryableTaskError(f"{self.name} project-idea source timed out.") from exc
-        except httpx.HTTPError:
-            return None, f"{self.name}: source request failed."
+        except httpx.HTTPError as exc:
+            raise RetryableTaskError(f"{self.name} project-idea source request failed temporarily.") from exc
         return bounded_response, None
 
 
