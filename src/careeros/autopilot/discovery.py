@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime
+
+import httpx
 
 from careeros.autopilot.matching import score_technology_role
 from careeros.applications.gates import evaluate_application_gates, matches_preferred_location
-from careeros.jobs.verification import EmployerPostingVerifier
+from careeros.jobs.location import is_us_location
+from careeros.jobs.verification import EmployerPostingVerifier, VerificationResult
 from careeros.jobs.sources import is_transient_source_error
 from careeros.workflows.errors import RetryableTaskError
 from careeros.workflows.repository import WorkflowRepository
 from careeros.jobs.models import JobQuery
 from careeros.jobs.repository import JobRepository
 from careeros.profiles.repository import ProfileRepository, ResumeRepository
-from careeros.queue import Task
+from careeros.queue import Task, now
 from careeros.worker import TaskOutcome
 
 
@@ -112,6 +116,8 @@ class JobDiscoveryService:
         locations = [location.strip() for location in (profile.preferred_locations or []) if isinstance(location, str) and location.strip()]
         candidates = []
         for job in self.repository.recent(limit=500):
+            if not is_us_location(job.location):
+                continue
             technology_score, _ = score_technology_role(job)
             if technology_score < 70 or not _matches_preferred_location(job, locations):
                 continue
@@ -123,18 +129,16 @@ class JobDiscoveryService:
         seen = set()
         for candidate in candidates[:50]:
             job = candidate[4]
-            verification = self.verifier.verify(job.employer_url or job.url, job.company, job.title)
+            previous = self.repository.get_verification(job.id)
+            if previous and previous['status'] == 'held' and not _retry_due(previous):
+                verification = VerificationResult(**{key: previous[key] for key in (
+                    'status', 'reason', 'final_url', 'checked_at', 'text', 'fingerprint', 'outcome',
+                    'checked_url', 'evidence_summary', 'posting_evidence')})
+            else:
+                verification = self.check_job(job, automatic=True)
             gates = evaluate_application_gates(job, profile, verification)
             with self.repository.db.connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    """INSERT INTO job_verifications(job_id,status,reason,final_url,checked_at,text,fingerprint)
-                       VALUES(?,?,?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET
-                       status=excluded.status,reason=excluded.reason,final_url=excluded.final_url,
-                       checked_at=excluded.checked_at,text=excluded.text,fingerprint=excluded.fingerprint""",
-                    (job.id, verification.status, verification.reason, verification.final_url,
-                     verification.checked_at, verification.text, verification.fingerprint),
-                )
                 for gate in gates:
                     conn.execute(
                         """INSERT INTO job_gate_results(job_id,name,passed,reason,checked_at) VALUES(?,?,?,?,?)
@@ -169,6 +173,38 @@ class JobDiscoveryService:
                         payload={"job_id": dispatch["job_id"], "resume_id": dispatch["resume_id"], "gates_passed": True},
                     )
         return queued
+
+    def check_job(self, job, *, automatic: bool = False) -> VerificationResult:
+        """Check one public posting and store its deterministic gates, without drafting."""
+        if not is_us_location(job.location):
+            raise ValueError('Confirm a U.S. location before checking this employer posting')
+        if self.verifier is None:
+            raise RuntimeError('Employer verification is unavailable')
+        try:
+            verification = self.verifier.verify(job.employer_url or job.url, job.company, job.title)
+        except (OSError, httpx.TransportError):
+            verification = VerificationResult('held', 'Employer page has a temporary network or timeout error',
+                                               None, now(), outcome='transient_error')
+        except Exception:
+            # An unexpected parser/check failure is local to this listing. Keep
+            # it held for an explicit recheck rather than swallowing the batch.
+            verification = VerificationResult('held', 'Employer check could not complete safely; recheck this posting',
+                                               None, now(), outcome='insufficient_detail')
+        gates = evaluate_application_gates(job, self.profiles.get(), verification)
+        with self.repository.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            previous = conn.execute('SELECT attempts,status FROM job_verifications WHERE job_id=?', (job.id,)).fetchone()
+            attempts = previous['attempts'] if previous else 0
+            if automatic:
+                attempts = min(3, (attempts if previous and previous['status'] == 'held' else 0) + 1) if verification.outcome != 'verified' else 0
+            self.repository.save_verification(conn, job.id, verification, attempts=attempts)
+            for gate in gates:
+                conn.execute('''INSERT INTO job_gate_results(job_id,name,passed,reason,checked_at) VALUES(?,?,?,?,?)
+                                ON CONFLICT(job_id,name) DO UPDATE SET passed=excluded.passed,
+                                reason=excluded.reason,checked_at=excluded.checked_at''',
+                             (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at))
+        return verification
+
 
     def _queue_outreach(self) -> bool:
         if not all((self.outreach, self.profiles, self.resumes)):
@@ -234,6 +270,15 @@ class JobDiscoveryService:
 
 def _clean(value: object, limit: int) -> str:
     return " ".join(str(value).replace("\x00", " ").split())[:limit]
+
+
+def _retry_due(record: dict) -> bool:
+    if record['outcome'] != 'transient_error' or record['attempts'] >= 3 or not record['next_retry_at']:
+        return False
+    try:
+        return datetime.fromisoformat(record['next_retry_at']) <= datetime.fromisoformat(now())
+    except (ValueError, TypeError):
+        return False
 
 
 def _normalize(value: str) -> str:

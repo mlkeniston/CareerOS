@@ -482,3 +482,128 @@ def test_discovery_persists_header_notice_and_holds_preparation(client, notice, 
         assert saved_job.description == 'Source feed text stays separate'
     finally:
         verifier.close()
+
+
+def _verification_discovery(client, jobs, handler):
+    app = client.app
+    app.state.profile_repository.update('', '', ['Software Engineer'], [], [])
+    app.state.resume_repository.create('Current', 'Built Python APIs')
+    service = app.state.job_discovery_service
+    service.sources = [_Source('fixture', SourceResult(jobs, []))]
+    service.outreach = None
+    service.project_ideas = None
+    verifier = EmployerPostingVerifier(transport=httpx.MockTransport(handler), resolver=lambda host, port: ['93.184.216.34'])
+    service.verifier = verifier
+    return service, verifier
+
+
+def test_discovery_persists_each_candidate_when_one_check_raises_timeout(client):
+    jobs = [_job('Software Engineer Intern A', 'internship', 'Build APIs'), _job('Software Engineer Intern B', 'internship', 'Build APIs')]
+    service, verifier = _verification_discovery(client, jobs, lambda request: httpx.Response(503))
+    original = verifier.verify
+
+    def check(url, company, title):
+        if title.endswith('B'):
+            raise httpx.ReadTimeout('temporary failure')
+        return original(url, company, title)
+
+    verifier.verify = check
+    try:
+        outcome = _run_discovery(client)
+        records = service.repository.verifications([job.id for job in service.repository.recent()])
+        assert len(records) == 2
+        assert all(record['outcome'] == 'transient_error' and record['status'] == 'held' for record in records.values())
+        assert all(record['attempts'] == 1 and record['next_retry_at'] for record in records.values())
+        assert outcome.result['applications_queued'] == 0
+        with client.app.state.db.connect() as conn:
+            assert conn.execute('SELECT COUNT(DISTINCT job_id) FROM job_gate_results').fetchone()[0] == 2
+        assert client.app.state.fake_planner.calls == []
+    finally:
+        verifier.close()
+
+
+def test_transient_discovery_retries_when_due_and_stops_after_three_checks(client):
+    job = _job('Software Engineer Intern', 'internship', 'Build APIs')
+    service, verifier = _verification_discovery(client, [job], lambda request: httpx.Response(503))
+    try:
+        _run_discovery(client)
+        saved = service.repository.recent()[0]
+        first = service.repository.get_verification(saved.id)
+        _run_discovery(client)
+        assert service.repository.get_verification(saved.id) == first
+        for attempts in [2, 3]:
+            with service.repository.db.connect() as conn:
+                conn.execute("UPDATE job_verifications SET next_retry_at='2000-01-01T00:00:00+00:00' WHERE job_id=?", (saved.id,))
+            _run_discovery(client)
+            assert service.repository.get_verification(saved.id)['attempts'] == attempts
+        last = service.repository.get_verification(saved.id)
+        assert last['next_retry_at'] is None
+        _run_discovery(client)
+        assert service.repository.get_verification(saved.id) == last
+        assert _task_count(client, 'application') == 0
+        assert client.app.state.fake_planner.calls == []
+    finally:
+        verifier.close()
+
+
+@pytest.mark.parametrize('outcome', ['closed', 'identity_mismatch', 'insufficient_detail', 'access_restricted', 'not_found', 'unsafe_destination'])
+def test_discovery_does_not_automatically_retry_permanent_holds(client, outcome):
+    from careeros.jobs.verification import VerificationResult
+    job = _job('Software Engineer Intern', 'internship', 'Build APIs')
+    service, verifier = _verification_discovery(client, [job], lambda request: httpx.Response(503))
+    verifier.verify = lambda url, company, title: VerificationResult('held', 'Permanent hold', None, '2026-10-13T12:00:00+00:00', outcome=outcome)
+    try:
+        _run_discovery(client)
+        saved = service.repository.recent()[0]
+        record = service.repository.get_verification(saved.id)
+        assert record['outcome'] == outcome
+        assert record['next_retry_at'] is None
+        verifier.verify = lambda *args: (_ for _ in ()).throw(AssertionError('permanent outcome was retried'))
+        _run_discovery(client)
+        assert service.repository.get_verification(saved.id) == record
+        assert _task_count(client, 'application') == 0
+    finally:
+        verifier.close()
+
+
+def test_transient_recovery_queues_a_single_application_without_drafting(client):
+    job = _job('Software Engineer Intern', 'internship', 'Build APIs')
+    responses = [503, 200, 200]
+    text = 'Acme Software Engineer Intern. Build Python services, implement features and review code with the engineering team. Collaborate with mentors, document features and deliver useful software to customers using careful implementation and thoughtful design.'
+    service, verifier = _verification_discovery(client, [job], lambda request: httpx.Response(responses.pop(0), text=text, headers={'content-type': 'text/plain'}))
+    try:
+        assert _run_discovery(client).result['applications_queued'] == 0
+        saved = service.repository.recent()[0]
+        with service.repository.db.connect() as conn:
+            conn.execute("UPDATE job_verifications SET next_retry_at='2000-01-01T00:00:00+00:00' WHERE job_id=?", (saved.id,))
+        assert _run_discovery(client).result['applications_queued'] == 1
+        assert _run_discovery(client).result['applications_queued'] == 0
+        record = service.repository.get_verification(saved.id)
+        assert record['outcome'] == 'verified'
+        assert record['next_retry_at'] is None
+        assert _task_count(client, 'application') == 1
+        assert len(client.app.state.application_service.list()) == 1
+        assert client.app.state.fake_planner.calls == []
+    finally:
+        verifier.close()
+
+
+def test_unexpected_verifier_failure_does_not_stop_other_eligible_candidates(client):
+    jobs = [_job('Software Engineer Intern A', 'internship', 'Build APIs'), _job('Software Engineer Intern B', 'internship', 'Build APIs')]
+    text = 'Acme Software Engineer Intern A. Build Python APIs and work with the engineering team. Collaborate with mentors, document features and deliver useful software to customers using careful implementation and thoughtful design.'
+    service, verifier = _verification_discovery(client, jobs, lambda request: httpx.Response(200, text=text, headers={'content-type': 'text/plain'}))
+    original = verifier.verify
+
+    def check(url, company, title):
+        if title.endswith('B'):
+            raise ValueError('malformed adapter data')
+        return original(url, company, title)
+
+    verifier.verify = check
+    try:
+        assert _run_discovery(client).result['applications_queued'] == 1
+        records = service.repository.verifications([job.id for job in service.repository.recent()])
+        assert sorted(record['outcome'] for record in records.values()) == ['insufficient_detail', 'verified']
+        assert len(client.app.state.application_service.list()) == 1
+    finally:
+        verifier.close()

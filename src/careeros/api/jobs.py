@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from careeros.autopilot.matching import score_technology_role
+from careeros.jobs.location import is_us_location
 from careeros.jobs.models import JobListing, JobQuery
 from careeros.jobs.repository import JobRepository
 
@@ -32,7 +33,9 @@ class ManualJobInput(BaseModel):
 @router.get("/api/jobs")
 def search_jobs(request: Request, q: str = Query(default="", max_length=200), location: str = Query(default="", max_length=100), kind: str = Query(default="", max_length=40), remote_only: bool = False, saved: bool = False, limit: int = Query(default=100, ge=1, le=500)):
     query = JobQuery(q, location, kind, remote_only, limit)
-    return [_job_json(job) for job in request.app.state.job_repository.search(query, saved_only=saved)]
+    jobs = request.app.state.job_repository.search(query, saved_only=saved)
+    verifications = _verification_map(request, jobs)
+    return [_job_json(job, verifications.get(job.id)) for job in jobs]
 
 
 @router.post("/api/jobs/refresh")
@@ -64,7 +67,7 @@ def add_manual_job(payload: ManualJobInput, request: Request):
         saved = request.app.state.job_repository.add_manual(listing)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return _job_json(saved)
+    return _job_json(saved, _get_verification(request, saved.id))
 
 
 @router.post("/api/jobs/{job_id}/save")
@@ -72,7 +75,7 @@ def save_job(job_id: str, request: Request):
     job = request.app.state.job_repository.set_saved(job_id, True)
     if not job:
         raise HTTPException(404, "Job not found")
-    return _job_json(job)
+    return _job_json(job, _get_verification(request, job.id))
 
 
 @router.post("/api/jobs/{job_id}/unsave")
@@ -80,9 +83,47 @@ def unsave_job(job_id: str, request: Request):
     job = request.app.state.job_repository.set_saved(job_id, False)
     if not job:
         raise HTTPException(404, "Job not found")
-    return _job_json(job)
+    return _job_json(job, _get_verification(request, job.id))
 
 
-def _job_json(job: JobListing) -> dict:
+@router.post("/api/jobs/{job_id}/verify")
+def verify_job(job_id: str, request: Request):
+    repository = request.app.state.job_repository
+    job = repository.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if not is_us_location(job.location):
+        raise HTTPException(409, "Confirm a U.S. location before checking this employer posting")
+    service = request.app.state.job_discovery_service
+    if service.verifier is None:
+        raise HTTPException(503, "Employer verification is not available right now")
+    service.check_job(job)
+    return _job_json(repository.get(job.id), _get_verification(request, job.id))
+
+
+def _verification_map(request: Request, jobs: list[JobListing]) -> dict[str, dict]:
+    ids = [job.id for job in jobs if job.id]
+    if not ids:
+        return {}
+    return {job_id: _verification_json(value) for job_id, value in request.app.state.job_repository.verifications(ids).items()}
+
+
+def _get_verification(request: Request, job_id: str) -> dict | None:
+    value = request.app.state.job_repository.get_verification(job_id)
+    return _verification_json(value) if value else None
+
+
+def _verification_json(verification) -> dict:
+    return {key: verification[key] for key in ('status', 'outcome', 'reason', 'checked_url', 'final_url',
+                                              'checked_at', 'evidence_summary', 'attempts', 'next_retry_at')}
+
+
+def _job_json(job: JobListing, verification: dict | None = None) -> dict:
     score, reasons = score_technology_role(job)
-    return {"id": job.id, "source": job.source, "title": job.title, "company": job.company, "location": job.location, "kind": job.kind, "original_kind": job.original_kind, "remote": job.remote, "url": job.url, "description": job.description, "published_at": job.published_at, "is_saved": job.is_saved, "technology_score": score, "technology_reasons": reasons}
+    verification = dict(verification) if verification else {'status': 'not_checked', 'outcome': None,
+        'reason': 'Employer check has not run yet.', 'checked_at': None, 'checked_url': None, 'final_url': None,
+        'evidence_summary': '', 'attempts': 0, 'next_retry_at': None}
+    verification['can_recheck'] = is_us_location(job.location)
+    verification['retry_eligible'] = (verification['can_recheck'] and verification['outcome'] == 'transient_error'
+                                      and verification['attempts'] < 3 and bool(verification['next_retry_at']))
+    return {"id": job.id, "source": job.source, "title": job.title, "company": job.company, "location": job.location, "kind": job.kind, "original_kind": job.original_kind, "remote": job.remote, "url": job.url, "description": job.description, "published_at": job.published_at, "fetched_at": job.fetched_at, "source_url": job.source_url, "employer_url": job.employer_url, "application_url": job.application_url, "requisition_id": job.requisition_id, "source_age": job.source_age, "is_saved": job.is_saved, "technology_score": score, "technology_reasons": reasons, "employer_verification": verification}

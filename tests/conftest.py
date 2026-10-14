@@ -116,7 +116,7 @@ def seed_verified_application_job(app, job_id, text=None):
     gates = evaluate_application_gates(job, app.state.profile_repository.get(), verification)
     assert all(gate.passed for gate in gates)
     with app.state.db.connect() as conn:
-        conn.execute('INSERT OR REPLACE INTO job_verifications VALUES(?,?,?,?,?,?,?)',
+        conn.execute('INSERT OR REPLACE INTO job_verifications(job_id,status,reason,final_url,checked_at,text,fingerprint) VALUES(?,?,?,?,?,?,?)',
                      (job_id, verification.status, verification.reason, verification.final_url, verification.checked_at, text, verification.fingerprint))
         for gate in gates:
             conn.execute('INSERT OR REPLACE INTO job_gate_results VALUES(?,?,?,?,?)',
