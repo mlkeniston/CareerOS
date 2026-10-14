@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from datetime import datetime
 
 import httpx
 
 from careeros.autopilot.matching import score_technology_role
 from careeros.applications.gates import evaluate_application_gates, matches_preferred_location
-from careeros.jobs.location import is_us_location
+from careeros.jobs.location import classify_location, is_us_location, UNKNOWN
 from careeros.jobs.verification import EmployerPostingVerifier, VerificationResult
 from careeros.jobs.sources import is_transient_source_error
 from careeros.workflows.errors import RetryableTaskError
@@ -87,14 +88,26 @@ class JobDiscoveryService:
 
         jobs_matched = sum(
             1 for job in self.repository.recent(limit=500)
-            if score_technology_role(job)[0] >= 70
+            if is_us_location(job.location) and score_technology_role(job)[0] >= 70
+        )
+        locations_held = sum(
+            1 for job in self.repository.recent(limit=500)
+            if classify_location(job.location) == UNKNOWN
         )
         applications_queued = self._queue_application()
         outreach_queued = self._queue_outreach()
         portfolio_queued = self._queue_portfolio()
+        recent_jobs = self.repository.recent(limit=500)
+        verifications = self.repository.verifications([job.id for job in recent_jobs if job.id])
+        verification_counts = Counter(record['outcome'] for record in verifications.values())
+        transient_retries = sum(
+            1 for record in verifications.values()
+            if record['outcome'] == 'transient_error' and record['attempts'] < 3 and record['next_retry_at']
+        )
         result = {
             "jobs_found": jobs_found,
             "jobs_matched": jobs_matched,
+            "locations_held": locations_held,
             "application_queued": applications_queued > 0,
             "applications_queued": applications_queued,
             "outreach_queued": outreach_queued,
@@ -102,6 +115,8 @@ class JobDiscoveryService:
             "successful_sources": successful_sources,
             "failed_sources": failed_sources,
             "source_warnings": warnings[:10],
+            "verification_counts": dict(sorted(verification_counts.items())),
+            "transient_retries": transient_retries,
         }
         return TaskOutcome("completed", result)
 
@@ -205,7 +220,6 @@ class JobDiscoveryService:
                              (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at))
         return verification
 
-
     def _queue_outreach(self) -> bool:
         if not all((self.outreach, self.profiles, self.resumes)):
             return False
@@ -219,6 +233,8 @@ class JobDiscoveryService:
             return False
         candidates = []
         for job in self.repository.recent(limit=500):
+            if not is_us_location(job.location):
+                continue
             technology_score, _ = score_technology_role(job)
             if technology_score < 70 or not _matches_preferred_location(job, locations):
                 continue
@@ -235,7 +251,7 @@ class JobDiscoveryService:
     def _queue_portfolio(self) -> bool:
         if self.project_ideas is None or self.project_engineering is None:
             return False
-        jobs = self.repository.recent(limit=500)
+        jobs = [job for job in self.repository.recent(limit=500) if is_us_location(job.location)]
         counts = []
         for name, terms in _MARKET_SKILLS:
             normalized_terms = tuple(_normalize(term) for term in terms)

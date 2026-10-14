@@ -102,6 +102,17 @@ def test_remote_preference_remains_an_or_match():
     assert _gates(locations=['New York', 'Remote'])['location'].passed
 
 
+@pytest.mark.parametrize(('location', 'passed'), [
+    ('Seattle, WA', True),
+    ('Remote - United States', True),
+    ('London, UK', False),
+    ('Remote', False),
+    ('New York', True),
+])
+def test_application_country_gate_requires_clear_us_location(location, passed):
+    assert _gates(location=location)['country'].passed is passed
+
+
 @pytest.mark.parametrize('condition', ['Must be authorized to work in the United States',
     'Must be a US citizen', 'Must be currently enrolled in a degree program',
     'Must graduate between May 2027 and December 2027', 'Requires 3 years of experience',

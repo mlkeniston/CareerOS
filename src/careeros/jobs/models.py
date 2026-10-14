@@ -14,6 +14,7 @@ class JobQuery:
     kind: str = ""
     remote_only: bool = False
     limit: int = 100
+    us_only: bool = False
 
     def __post_init__(self):
         if not 1 <= self.limit <= 500:

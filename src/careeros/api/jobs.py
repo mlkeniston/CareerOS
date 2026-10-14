@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from careeros.autopilot.matching import score_technology_role
-from careeros.jobs.location import is_us_location
+from careeros.jobs.location import classify_location, is_us_location
 from careeros.jobs.models import JobListing, JobQuery
 from careeros.jobs.repository import JobRepository
 
@@ -18,6 +18,7 @@ class RefreshInput(BaseModel):
     location: str = Field(default="", max_length=100)
     kind: str = Field(default="", max_length=40)
     remote_only: bool = False
+    us_only: bool = False
 
 
 class ManualJobInput(BaseModel):
@@ -31,8 +32,8 @@ class ManualJobInput(BaseModel):
 
 
 @router.get("/api/jobs")
-def search_jobs(request: Request, q: str = Query(default="", max_length=200), location: str = Query(default="", max_length=100), kind: str = Query(default="", max_length=40), remote_only: bool = False, saved: bool = False, limit: int = Query(default=100, ge=1, le=500)):
-    query = JobQuery(q, location, kind, remote_only, limit)
+def search_jobs(request: Request, q: str = Query(default="", max_length=200), location: str = Query(default="", max_length=100), kind: str = Query(default="", max_length=40), remote_only: bool = False, saved: bool = False, us_only: bool = False, limit: int = Query(default=100, ge=1, le=500)):
+    query = JobQuery(q, location, kind, remote_only, limit, us_only)
     jobs = request.app.state.job_repository.search(query, saved_only=saved)
     verifications = _verification_map(request, jobs)
     return [_job_json(job, verifications.get(job.id)) for job in jobs]
@@ -40,7 +41,7 @@ def search_jobs(request: Request, q: str = Query(default="", max_length=200), lo
 
 @router.post("/api/jobs/refresh")
 def refresh_jobs(payload: RefreshInput, request: Request):
-    query = JobQuery(payload.text, payload.location, payload.kind, payload.remote_only, 200)
+    query = JobQuery(payload.text, payload.location, payload.kind, payload.remote_only, 200, payload.us_only)
     count, sources = 0, []
     for source in request.app.state.job_sources:
         try:
@@ -126,4 +127,4 @@ def _job_json(job: JobListing, verification: dict | None = None) -> dict:
     verification['can_recheck'] = is_us_location(job.location)
     verification['retry_eligible'] = (verification['can_recheck'] and verification['outcome'] == 'transient_error'
                                       and verification['attempts'] < 3 and bool(verification['next_retry_at']))
-    return {"id": job.id, "source": job.source, "title": job.title, "company": job.company, "location": job.location, "kind": job.kind, "original_kind": job.original_kind, "remote": job.remote, "url": job.url, "description": job.description, "published_at": job.published_at, "fetched_at": job.fetched_at, "source_url": job.source_url, "employer_url": job.employer_url, "application_url": job.application_url, "requisition_id": job.requisition_id, "source_age": job.source_age, "is_saved": job.is_saved, "technology_score": score, "technology_reasons": reasons, "employer_verification": verification}
+    return {"id": job.id, "source": job.source, "title": job.title, "company": job.company, "location": job.location, "location_status": classify_location(job.location), "kind": job.kind, "original_kind": job.original_kind, "remote": job.remote, "url": job.url, "description": job.description, "published_at": job.published_at, "fetched_at": job.fetched_at, "source_url": job.source_url, "employer_url": job.employer_url, "application_url": job.application_url, "requisition_id": job.requisition_id, "source_age": job.source_age, "is_saved": job.is_saved, "technology_score": score, "technology_reasons": reasons, "employer_verification": verification}

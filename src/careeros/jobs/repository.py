@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 
 from careeros.db import Database
+from careeros.jobs.location import classify_location, US
 from careeros.jobs.models import JobListing, JobQuery
 from careeros.jobs.verification import VerificationResult
 from careeros.queue import now
@@ -66,7 +67,7 @@ class JobRepository:
                     where.append("(title LIKE ? ESCAPE '\\' OR company LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')")
                     params.extend([f"%{escaped}%"] * 4)
         if query.location:
-            where.append("location LIKE ? ESCAPE '\\'")
+            where.append("jobs.location LIKE ? ESCAPE '\\'")
             escaped = query.location.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{escaped}%")
         if query.kind:
@@ -77,19 +78,24 @@ class JobRepository:
         if saved_only:
             where.append("is_saved=1")
         clause = " WHERE " + " AND ".join(where) if where else ""
-        params.append(query.limit)
+        if not query.us_only:
+            params.append(query.limit)
+            limit_clause = " LIMIT ?"
+        else:
+            limit_clause = ""
         with self.db.connect() as conn:
-            rows = conn.execute("SELECT jobs.* FROM jobs" + joins + clause + " ORDER BY coalesce(published_at,'') DESC, company, title LIMIT ?", params).fetchall()
-        return [_job(row) for row in rows]
+            rows = conn.execute("SELECT jobs.* FROM jobs" + joins + clause + " ORDER BY coalesce(published_at,'') DESC, company, title" + limit_clause, params).fetchall()
+        jobs = [_job(row) for row in rows]
+        if query.us_only:
+            jobs = [job for job in jobs if classify_location(job.location) == US]
+        return jobs[:query.limit]
 
     def recent(self, limit: int = 100) -> list[JobListing]:
         """Return the newest cached listings for matching and office summaries."""
         return self.search(JobQuery(limit=limit))
 
-
     def get_verification(self, job_id: str) -> dict | None:
         return self.verifications([job_id]).get(job_id)
-
 
     def verifications(self, job_ids: list[str]) -> dict[str, dict]:
         if not job_ids:
@@ -106,7 +112,6 @@ class JobRepository:
                 value['outcome'] = 'verified'
             results[row['job_id']] = value
         return results
-
 
     def save_verification(self, conn: sqlite3.Connection, job_id: str, result: VerificationResult,
                           *, attempts: int | None = None) -> None:

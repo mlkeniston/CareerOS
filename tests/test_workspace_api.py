@@ -132,7 +132,13 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     queue.fail(discovery_failed, "PRIVATE TASK ERROR")
     discovery_done = queue.enqueue("job_discovery", {}, "ollama")
     assert queue.claim_next({"job_discovery"}).id == discovery_done
-    queue.finish(discovery_done, {"jobs_found": 18, "private": "PRIVATE TASK RESULT"})
+    queue.finish(discovery_done, {
+        "jobs_found": 18,
+        "verification_counts": {"verified": 7, "closed": 2, "transient_error": 1},
+        "transient_retries": 1,
+        "failed_sources": 2,
+        "private": "PRIVATE TASK RESULT",
+    })
     discovery_waiting = queue.enqueue("job_discovery", {"private": "PRIVATE TASK PAYLOAD"}, "ollama")
     outreach_draft, outreach_task = app.state.outreach_service.create_automatic(job.id, resume.id, "private-outreach")
     assert queue.claim_next({"outreach"}).id == outreach_task
@@ -154,6 +160,12 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
     assert workers["project-qa"]["model_status"] == "ready"
     assert workers["job-hunter"]["status"] == "waiting"
     assert workers["job-hunter"]["task_id"] == discovery_waiting
+    assert workers["job-hunter"]["scan_summary"] == {
+        "jobs_found": 18,
+        "verification_counts": {"verified": 7, "closed": 2, "transient_error": 1},
+        "transient_retries": 1,
+        "failed_sources": 2,
+    }
     assert workers["application-prep"]["status"] == "working"
     assert workers["application-prep"]["task_id"] == running_task
     assert workers["application-prep"]["since"] == "2026-10-09T12:00:00+00:00"

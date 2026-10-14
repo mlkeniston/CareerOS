@@ -461,7 +461,7 @@ class ApplicationService:
         if require_ready:
             if not verified:
                 raise RuntimeError('Employer verification is missing or uncertain. Hold this job until it is verified.')
-            expected = {'verified', 'role', 'location', 'details', 'eligibility'}
+            expected = {'verified', 'country', 'role', 'location', 'details', 'eligibility'}
             if {gate['name'] for gate in gates} != expected or not all(gate['passed'] for gate in gates):
                 raise RuntimeError('Application gates are missing or failed. Hold this job until all checks pass.')
             current = evaluate_application_gates(SimpleNamespace(**dict(job)), SimpleNamespace(**profile_data), SimpleNamespace(**dict(verification)))

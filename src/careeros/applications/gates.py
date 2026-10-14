@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from careeros.jobs.location import classify_location, US
+
 
 @dataclass(frozen=True, slots=True)
 class GateResult:
@@ -149,8 +151,16 @@ def evaluate_application_gates(job, profile, verification) -> list[GateResult]:
     location = matches_preferred_location(job, profile.preferred_locations or [])
     role = any(role_overlap(job.title, saved) for saved in roles)
     details = len(verification.text.strip()) >= 160 and len(verification.text.split()) >= 25
+    country_status = classify_location(job.location)
+    country_passed = country_status == US
+    country_reason = (
+        "Location is confirmed in the United States" if country_passed else
+        "Location is outside the United States" if country_status == "outside_us" else
+        "Location is unclear; confirm a U.S. state or country before preparation"
+    )
     return [
         GateResult('verified', verification.status == 'verified', verification.reason),
+        GateResult('country', country_passed, country_reason),
         GateResult('role', role, 'Matches a saved target role' if role else 'Role does not overlap a saved target role'),
         GateResult('location', location, 'Matches saved location or remote preference' if location else 'Outside saved location preferences'),
         GateResult('details', details, 'Employer text is sufficient to prepare' if details else 'Employer text is too sparse to prepare'),

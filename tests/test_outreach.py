@@ -263,7 +263,7 @@ def _run_discovery(client):
 def _job(title, description):
     slug = title.lower().replace(" ", "-")
     return JobListing(
-        "fixture", slug, title, "Acme", "Remote", "internship",
+        "fixture", slug, title, "Acme", "Remote - United States", "internship",
         f"https://jobs.example/{slug}", description, "2026-10-09",
         "2026-10-09T12:00:00+00:00", remote=True, original_kind="internship",
     )

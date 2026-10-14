@@ -68,6 +68,76 @@ def test_search_results_explain_local_technology_role_match(client):
     assert result["technology_reasons"] == ["Technology role: software", "Internship or early-career signal"]
 
 
+def test_us_only_search_returns_confirmed_us_jobs_and_labels_other_locations(client):
+    jobs = [
+        {"title": "Software Intern", "company": "Seattle Co", "location": "Seattle, WA", "url": "https://jobs.example/us"},
+        {"title": "Software Intern", "company": "London Co", "location": "London, UK", "url": "https://jobs.example/uk"},
+        {"title": "Software Intern", "company": "Remote Co", "location": "Remote", "url": "https://jobs.example/unknown"},
+    ]
+    saved = [client.post("/api/jobs/manual", json=job).json() for job in jobs]
+
+    us_only = client.get("/api/jobs?us_only=true").json()
+    all_locations = client.get("/api/jobs?us_only=false").json()
+
+    assert [job["id"] for job in us_only] == [saved[0]["id"]]
+    assert {job["company"]: job["location_status"] for job in all_locations} == {
+        "Seattle Co": "us", "London Co": "outside_us", "Remote Co": "unknown",
+    }
+
+
+def test_job_search_exposes_employer_verification_reason(client):
+    listing = {"title": "Software Intern", "company": "Seattle Co", "location": "Seattle, WA", "url": "https://jobs.example/us"}
+    job = client.post("/api/jobs/manual", json=listing).json()
+    with client.app.state.db.connect() as conn:
+        conn.execute(
+            "INSERT INTO job_verifications(job_id,status,reason,final_url,checked_at,text,fingerprint) VALUES(?,?,?,?,?,?,?)",
+            (job["id"], "held", "Employer page returned HTTP 403", job["url"], "test-time", "", None),
+        )
+
+    result = client.get("/api/jobs?us_only=false").json()[0]
+
+    assert result["employer_verification"] == {
+        "status": "held", "reason": "Employer page returned HTTP 403", "checked_at": "test-time",
+        "outcome": "insufficient_detail", "checked_url": None, "final_url": job["url"],
+        "evidence_summary": "", "attempts": 0, "next_retry_at": None, "retry_eligible": False, "can_recheck": True,
+    }
+
+
+def test_saved_us_job_can_be_rechecked_and_result_is_visible(client):
+    from careeros.jobs.verification import VerificationResult
+
+    listing = {"title": "Software Intern", "company": "Seattle Co", "location": "Seattle, WA", "url": "https://jobs.example/us"}
+    job = client.post("/api/jobs/manual", json=listing).json()
+    client.app.state.job_discovery_service.verifier = _FixedVerifier(
+        VerificationResult("held", "Employer primary posting does not match the company and role", job["url"], "checked-now")
+    )
+
+    checked = client.post(f"/api/jobs/{job['id']}/verify")
+
+    assert checked.status_code == 200
+    assert checked.json()["employer_verification"]["status"] == "held"
+    assert checked.json()["employer_verification"]["reason"] == "Employer primary posting does not match the company and role"
+    assert client.get("/api/jobs?us_only=false").json()[0]["employer_verification"]["status"] == "held"
+
+
+def test_job_recheck_requires_a_confirmed_us_location(client):
+    listing = {"title": "Software Intern", "company": "Remote Co", "location": "Remote", "url": "https://jobs.example/unknown"}
+    job = client.post("/api/jobs/manual", json=listing).json()
+
+    response = client.post(f"/api/jobs/{job['id']}/verify")
+
+    assert response.status_code == 409
+    assert "U.S. location" in response.json()["detail"]
+
+
+class _FixedVerifier:
+    def __init__(self, result):
+        self.result = result
+
+    def verify(self, url, company, title):
+        return self.result
+
+
 def test_manual_recheck_exposes_persisted_evidence_without_application_or_planner_work(client):
     from careeros.jobs.verification import VerificationResult
     job = client.post('/api/jobs/manual', json={'title': 'Software Intern', 'company': 'Acme', 'location': 'Seattle, WA', 'url': 'https://jobs.example/one'}).json()
@@ -133,22 +203,3 @@ def test_manual_recheck_does_not_reset_exhausted_automatic_retry_budget(client):
     assert checked['retry_eligible'] is False
     assert checked['can_recheck'] is True
     assert client.app.state.fake_planner.calls == []
-
-
-
-def test_job_search_exposes_employer_verification_reason(client):
-    listing = {"title": "Software Intern", "company": "Seattle Co", "location": "Seattle, WA", "url": "https://jobs.example/us"}
-    job = client.post("/api/jobs/manual", json=listing).json()
-    with client.app.state.db.connect() as conn:
-        conn.execute(
-            "INSERT INTO job_verifications(job_id,status,reason,final_url,checked_at,text,fingerprint) VALUES(?,?,?,?,?,?,?)",
-            (job["id"], "held", "Employer page returned HTTP 403", job["url"], "test-time", "", None),
-        )
-
-    result = client.get("/api/jobs?us_only=false").json()[0]
-
-    assert result["employer_verification"] == {
-        "status": "held", "reason": "Employer page returned HTTP 403", "checked_at": "test-time",
-        "outcome": "insufficient_detail", "checked_url": None, "final_url": job["url"],
-        "evidence_summary": "", "attempts": 0, "next_retry_at": None, "retry_eligible": False, "can_recheck": True,
-    }

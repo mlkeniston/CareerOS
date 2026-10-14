@@ -108,7 +108,7 @@
         <div class="screen-heading"><button class="back-link" data-station="home" type="button">← Studio</button><p class="eyebrow">STATION 01 · FIND YOUR NEXT STEP</p><h1>Job Board</h1><p>Search your saved listings or refresh public job boards when you’re ready.</p></div>
         <div class="two-column-layout">
           <section class="panel search-panel"><div class="panel-title"><div><span class="panel-kicker">DISCOVER</span><h2>Roles to explore</h2></div><span class="panel-icon blue">⌕</span></div>
-            <form id="job-search-form" class="filter-grid"><label class="wide">Keywords<input id="job-search" name="q" placeholder="e.g. backend, data science" maxlength="200"></label><label>Location<input id="job-location" name="location" placeholder="Anywhere"></label><label>Level<select id="job-kind" name="kind"><option value="">Any level</option><option value="internship">Internship</option><option value="entry-level">Entry level</option><option value="full-time">Full time</option><option value="contract">Contract</option></select></label><label class="check-label wide"><input id="remote-only" type="checkbox"><span>Remote roles only</span></label><div class="form-actions wide"><button class="button button-dark" type="submit">Search jobs</button><button class="button button-soft" id="job-refresh" type="button">Refresh public boards</button></div></form>
+            <form id="job-search-form" class="filter-grid"><label class="wide">Keywords<input id="job-search" name="q" placeholder="e.g. backend, data science" maxlength="200"></label><label>Location<input id="job-location" name="location" placeholder="Anywhere"></label><label>Level<select id="job-kind" name="kind"><option value="">Any level</option><option value="internship">Internship</option><option value="entry-level">Entry level</option><option value="full-time">Full time</option><option value="contract">Contract</option></select></label><label class="check-label wide"><input id="us-only" type="checkbox" checked><span>United States only</span></label><p class="small-note wide">Unclear locations are held out of U.S. results and automatic preparation.</p><label class="check-label wide"><input id="remote-only" type="checkbox"><span>Remote roles only</span></label><div class="form-actions wide"><button class="button button-dark" type="submit">Search jobs</button><button class="button button-soft" id="job-refresh" type="button">Refresh public boards</button></div></form>
             <div class="section-rule"><span id="job-result-label">SAVED LISTINGS</span><button class="text-button" id="show-saved-jobs" type="button">Saved only</button></div><div id="job-results" class="card-list"><p class="empty-state">Search for a role or add one you found elsewhere.</p></div>
           </section>
           <aside class="panel manual-panel"><div class="panel-title"><div><span class="panel-kicker">FOUND A ROLE?</span><h2>Add a listing</h2></div><span class="panel-icon peach">＋</span></div>
@@ -158,6 +158,6 @@
       </form>
     </dialog>
   </div>
-  <script type="module" src="/static/app.js?v=project-qa-worker-20261012"></script>
+  <script type="module" src="/static/app.js?v=verification-outcomes-20261013"></script>
 </body>
 </html>

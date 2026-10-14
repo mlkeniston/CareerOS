@@ -1,6 +1,6 @@
 import { HandoffCursor, OfficeRenderer } from "./office-renderer.js?v=project-qa-worker-20261012";
 
-const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, activeOutreach: null, office: null, officeSelection: null };
+const state = { provider: "ollama", cloudConfigured: false, settings: null, selectedJob: null, savedOnly: false, activeProposal: null, activeOutreach: null, office: null, officeSelection: null, profileEditVersion: 0 };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 const officeRenderer = new OfficeRenderer($("#office-canvas"), {
@@ -108,6 +108,36 @@ function safeJobUrl(value) {
   } catch { return null; }
 }
 
+const VERIFICATION_OUTCOMES = {
+  verified: { label: "Employer verified", tone: "verified" },
+  access_restricted: { label: "Access restricted", tone: "held" },
+  closed: { label: "Posting closed", tone: "held" },
+  not_found: { label: "Posting closed", tone: "held" },
+  identity_mismatch: { label: "Employer or role mismatch", tone: "held" },
+  insufficient_detail: { label: "Posting needs more detail", tone: "held" },
+  transient_error: { label: "Temporary check problem", tone: "retry" },
+  unsafe_destination: { label: "Unsafe destination blocked", tone: "held" },
+};
+
+function verificationPresentation(verification) {
+  if (verification?.outcome && VERIFICATION_OUTCOMES[verification.outcome]) {
+    return VERIFICATION_OUTCOMES[verification.outcome];
+  }
+  return verification?.status === "verified"
+    ? VERIFICATION_OUTCOMES.verified
+    : { label: "Employer check not run", tone: "pending" };
+}
+
+function provenanceLink(label, value) {
+  const url = safeJobUrl(value);
+  if (!url) return null;
+  const link = element("a", "job-provenance-link", label);
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  return link;
+}
+
 function jobCard(job) {
   const card = element("article", "job-card");
   const top = element("div", "job-card-top");
@@ -127,6 +157,27 @@ function jobCard(job) {
   meta.append(element("span", "chip", job.kind || "other"));
   if (job.remote) meta.append(element("span", "chip", "remote"));
   if (job.source) meta.append(element("span", "chip", job.source));
+  if (job.location_status === "unknown") meta.append(element("span", "chip location-review", "Location needs review"));
+  else if (job.location_status === "outside_us") meta.append(element("span", "chip location-review", "Outside U.S."));
+  const verification = job.employer_verification || { status: "not_checked", reason: "Employer check has not run yet." };
+  const presentation = verificationPresentation(verification);
+  const verificationBox = element("div", `verification-info ${presentation.tone}`);
+  verificationBox.append(element("strong", "", presentation.label));
+  verificationBox.append(element("span", "", verification.reason || "Employer check has not run yet."));
+  if (verification.checked_at) {
+    verificationBox.append(element("small", "", `Checked ${formatDateTime(verification.checked_at)}`));
+  }
+  card.append(verificationBox);
+  const provenance = element("div", "job-provenance");
+  const provenanceLinks = [
+    provenanceLink("Source listing", job.source_url),
+    provenanceLink("Employer posting", job.employer_url || verification.final_url),
+    provenanceLink("Application page", job.application_url),
+  ].filter(Boolean);
+  if (provenanceLinks.length) {
+    provenance.append(...provenanceLinks);
+    card.append(provenance);
+  }
   card.append(meta);
   if (job.description) {
     const description = element("p", "muted", job.description.slice(0, 240));
@@ -144,7 +195,26 @@ function jobCard(job) {
     } catch (error) { notify(error.message); }
   });
   actions.append(save);
-  if (job.is_saved) {
+  if (verification.can_recheck && verification.status !== "verified") {
+    const checkLabel = verification.retry_eligible ? "Retry employer check" : "Check employer posting";
+    const check = element("button", "button button-outline", checkLabel);
+    check.type = "button";
+    check.addEventListener("click", async () => {
+      check.disabled = true;
+      check.textContent = "Checking…";
+      try {
+        const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/verify`, { method: "POST" });
+        notify(result.employer_verification.reason);
+        searchJobs();
+      } catch (error) {
+        check.disabled = false;
+        check.textContent = checkLabel;
+        notify(error.message);
+      }
+    });
+    actions.append(check);
+  }
+  if (job.is_saved && job.location_status === "us") {
     const prepare = element("button", "button button-dark", "Prepare application");
     prepare.type = "button";
     prepare.addEventListener("click", () => {
@@ -153,6 +223,8 @@ function jobCard(job) {
       go("resume");
     });
     actions.append(prepare);
+  } else if (job.is_saved && job.location_status !== "us") {
+    actions.append(element("span", "small-note", "Held from preparation until a U.S. location is confirmed."));
   }
   card.append(actions);
   return card;
@@ -164,6 +236,7 @@ async function searchJobs() {
   params.set("location", $("#job-location").value.trim());
   params.set("kind", $("#job-kind").value);
   params.set("remote_only", String($("#remote-only").checked));
+  params.set("us_only", String($("#us-only").checked));
   params.set("saved", String(state.savedOnly));
   try {
     const jobs = await api("/api/jobs?" + params.toString());
@@ -182,7 +255,7 @@ $("#job-refresh").addEventListener("click", async event => {
   button.disabled = true;
   button.textContent = "Refreshing…";
   try {
-    const result = await api("/api/jobs/refresh", { method: "POST", body: { text: $("#job-search").value, location: $("#job-location").value, kind: $("#job-kind").value, remote_only: $("#remote-only").checked } });
+    const result = await api("/api/jobs/refresh", { method: "POST", body: { text: $("#job-search").value, location: $("#job-location").value, kind: $("#job-kind").value, remote_only: $("#remote-only").checked, us_only: $("#us-only").checked } });
     const errors = result.sources.filter(item => item.error).map(item => `${item.name}: ${item.error}`);
     const warnings = result.sources.flatMap(item => item.warnings || []);
     notify(errors.length ? "Some feeds were unavailable. Cached roles remain." : `${result.saved} listings refreshed${warnings.length ? ` · ${warnings[0]}` : ""}`);
@@ -384,6 +457,7 @@ function renderWorkerTooltip(workerId, position) {
   if (worker.latest_verdict) details.push(`Latest verdict: ${worker.latest_verdict}`);
   if (worker.qa_status) details.push(`QA cycle: ${worker.qa_status}`);
   if (worker.hold_reason) details.push(worker.hold_reason);
+  if (worker.scan_summary) details.push(scanSummaryText(worker.scan_summary));
   $("#worker-tooltip-meta").textContent = details.join("  /  ");
   const modelLine = $("#worker-tooltip-model");
   if (worker.model) {
@@ -441,6 +515,17 @@ function renderInspector() {
     if (worker.latest_verdict) addInspectorMeta(meta, "Latest verdict", worker.latest_verdict);
     if (worker.qa_status) addInspectorMeta(meta, "QA result", worker.qa_status.replaceAll("_", " "));
     if (worker.hold_reason) addInspectorMeta(meta, "Hold reason", worker.hold_reason);
+    if (worker.scan_summary) {
+      const summary = worker.scan_summary;
+      addInspectorMeta(meta, "Latest scan", `${formatCount(summary.jobs_found)} roles`);
+      addInspectorMeta(meta, "Verified postings", formatCount(summary.verification_counts?.verified));
+      addInspectorMeta(meta, "Source failures", formatCount(summary.failed_sources));
+      addInspectorMeta(meta, "Scheduled retries", formatCount(summary.transient_retries));
+      const held = Object.entries(summary.verification_counts || {})
+        .filter(([outcome]) => outcome !== "verified")
+        .map(([outcome, count]) => `${verificationPresentation({outcome}).label}: ${count}`);
+      if (held.length) addInspectorMeta(meta, "Held outcomes", held.join(" · "));
+    }
     if (worker.since) addInspectorMeta(meta, "Working for", formatElapsed(worker.since));
   } else {
     target = OFFICE_STATIONS[selection.id];
@@ -486,6 +571,21 @@ function formatUntil(value) {
 function formatTimestamp(value) {
   const timestamp = Date.parse(value || "");
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "recently";
+}
+
+function formatDateTime(value) {
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+    : "recently";
+}
+
+function scanSummaryText(summary) {
+  const counts = summary.verification_counts || {};
+  const parts = [`${formatCount(summary.jobs_found)} found`, `${formatCount(counts.verified)} verified`];
+  if (summary.failed_sources) parts.push(`${summary.failed_sources} source failures`);
+  if (summary.transient_retries) parts.push(`${summary.transient_retries} scheduled retries`);
+  return parts.join(" · ");
 }
 
 function formatCount(value) { return Number.isInteger(value) ? String(value) : "0"; }
@@ -797,15 +897,17 @@ async function loadResumeDesk() {
   try {
     const [profile, resumes, applications] = await Promise.all([api("/api/profile"), api("/api/resumes"), api("/api/applications")]);
     const form = $("#profile-form");
-    form.elements.name.value = profile.name || "";
-    form.elements.summary.value = profile.summary || "";
-    form.elements.target_roles.value = (profile.target_roles || []).join(", ");
-    form.elements.preferred_locations.value = (profile.preferred_locations || []).join(", ");
-    form.elements.skills.value = (profile.skills || []).join(", ");
-    const facts = profile.eligibility_facts || {};
-    const eligibilityFields = ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "experience_years"];
-    eligibilityFields.forEach(key => { form.elements[key].value = facts[key] || ""; });
-    form.elements.other_eligibility.value = Object.entries(facts).filter(([key]) => !eligibilityFields.includes(key)).map(([key, value]) => `${key} = ${value}`).join("\n");
+    if (state.profileEditVersion === 0) {
+      form.elements.name.value = profile.name || "";
+      form.elements.summary.value = profile.summary || "";
+      form.elements.target_roles.value = (profile.target_roles || []).join(", ");
+      form.elements.preferred_locations.value = (profile.preferred_locations || []).join(", ");
+      form.elements.skills.value = (profile.skills || []).join(", ");
+      const facts = profile.eligibility_facts || {};
+      const eligibilityFields = ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "experience_years"];
+      eligibilityFields.forEach(key => { form.elements[key].value = facts[key] || ""; });
+      form.elements.other_eligibility.value = Object.entries(facts).filter(([key]) => !eligibilityFields.includes(key)).map(([key, value]) => `${key} = ${value}`).join("\n");
+    }
     renderResumes(resumes);
     renderApplications(applications);
     const selector = $("#prepare-form").elements.resume_id;
@@ -817,6 +919,8 @@ async function loadResumeDesk() {
     if (!state.selectedJob) $("#selected-job-copy").textContent = "Choose a saved listing from the Job Board first.";
   } catch (error) { notify(error.message); }
 }
+
+$("#profile-form").addEventListener("input", () => { state.profileEditVersion += 1; });
 
 $("#profile-form").addEventListener("submit", async event => {
   event.preventDefault();
@@ -834,7 +938,9 @@ $("#profile-form").addEventListener("submit", async event => {
       if (Object.hasOwn(eligibilityFacts, key)) throw new Error(`Eligibility fact already provided: ${key}`);
       eligibilityFacts[key] = line.slice(separator + 1).trim();
     }
+    const submittedEditVersion = state.profileEditVersion;
     await api("/api/profile", { method: "PUT", body: { name: form.elements.name.value, summary: form.elements.summary.value, target_roles: splitList(form.elements.target_roles.value), preferred_locations: splitList(form.elements.preferred_locations.value), skills: splitList(form.elements.skills.value), eligibility_facts: eligibilityFacts } });
+    if (state.profileEditVersion === submittedEditVersion) state.profileEditVersion = 0;
     notify("Profile saved on this Mac");
   } catch (error) { notify(error.message); }
 });

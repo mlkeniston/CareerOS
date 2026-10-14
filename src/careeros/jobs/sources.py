@@ -3,6 +3,7 @@ import httpx
 from typing import Protocol
 
 from careeros.jobs.models import JobQuery, SourceResult
+from careeros.jobs.location import is_us_location
 
 
 class JobSource(Protocol):
@@ -17,6 +18,8 @@ def matches_query(job, query: JobQuery) -> bool:
     if query.location and query.location.casefold() not in job.location.casefold():
         return False
     if query.kind and query.kind not in {job.kind, job.original_kind.lower()}:
+        return False
+    if query.us_only and not is_us_location(job.location):
         return False
     return not query.remote_only or job.remote
 

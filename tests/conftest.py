@@ -105,8 +105,13 @@ def lever_fixture():
 def seed_verified_application_job(app, job_id, text=None):
     """Persist an offline employer verification and real passing gates for tests."""
     from careeros.applications.gates import evaluate_application_gates
+    from careeros.jobs.location import is_us_location
     from careeros.jobs.verification import VerificationResult
     job = app.state.job_repository.get(job_id)
+    if not is_us_location(job.location):
+        with app.state.db.connect() as conn:
+            conn.execute("UPDATE jobs SET location='Remote - United States',remote=1 WHERE id=?", (job_id,))
+        job = app.state.job_repository.get(job_id)
     profile = app.state.profile_repository.get()
     app.state.profile_repository.update(profile.name, profile.summary, [job.title], [], profile.skills or [], profile.eligibility_facts)
     text = text or (f"{job.company} {job.title}. Build Python APIs and useful tools with our engineering team. "

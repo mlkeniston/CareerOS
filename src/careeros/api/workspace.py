@@ -35,6 +35,9 @@ def get_workspace(request: Request):
     queue = request.app.state.queue
     tasks = queue.list(limit=1000)
     by_kind = {kind: _current_task(tasks, kind) for *_prefix, kind in _WORKERS if kind}
+    latest_discovery = next(
+        (task for task in tasks if task.kind == "job_discovery" and task.status == "completed"), None
+    )
     state = request.app.state.autopilot_state.get()
     interval = request.app.state.autopilot_scheduler.interval
     last = state["last_discovery_queued_at"]
@@ -91,6 +94,8 @@ def get_workspace(request: Request):
                 outreach_model_state, outreach_model_name,
             )
             worker.update({"status": status, "task_label": label})
+        if worker_id == "job-hunter" and latest_discovery is not None:
+            worker["scan_summary"] = _scan_summary(latest_discovery.result)
         if worker_id == "portfolio-engineer":
             revision_task = _current_task(tasks, "project_revision")
             if revision_task and revision_task.status in {"running", "queued"}:
@@ -214,6 +219,30 @@ def _worker_task(task) -> dict:
     if task.status == "running" and task.updated_at:
         result["since"] = task.updated_at
     return result
+
+
+def _scan_summary(result: dict | None) -> dict:
+    """Whitelist aggregate discovery metrics; task results may contain private data."""
+    result = result or {}
+    allowed_outcomes = {
+        'verified', 'closed', 'identity_mismatch', 'insufficient_detail',
+        'access_restricted', 'not_found', 'transient_error', 'unsafe_destination',
+    }
+    counts = result.get('verification_counts')
+    safe_counts = {
+        key: value for key, value in (counts.items() if isinstance(counts, dict) else ())
+        if key in allowed_outcomes and isinstance(value, int) and value >= 0
+    }
+    return {
+        'jobs_found': _safe_count(result.get('jobs_found')),
+        'verification_counts': safe_counts,
+        'transient_retries': _safe_count(result.get('transient_retries')),
+        'failed_sources': _safe_count(result.get('failed_sources')),
+    }
+
+
+def _safe_count(value) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def _waiting_state(

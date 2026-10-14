@@ -340,6 +340,77 @@ test('application review uses current evidence schema and explicit local actions
   assert.ok(html.indexOf('id="application-review"') < html.indexOf('id="outreach-screen"'));
 });
 
+test("a late Resume Desk load does not replace profile text entered by the user", async () => {
+  const app = await readFile(new URL("../src/careeros/static/app.js", import.meta.url), "utf8");
+  const start = app.indexOf("async function loadResumeDesk()");
+  const end = app.indexOf('\n$("#profile-form")', start);
+  const loader = app.slice(start, end);
+  const inputListenerStart = app.indexOf('\n$("#profile-form").addEventListener("input"', end);
+  const inputListenerEnd = app.indexOf('\n$("#profile-form").addEventListener("submit"', inputListenerStart);
+  const inputListener = app.slice(inputListenerStart, inputListenerEnd);
+  let resolveProfile;
+  const field = () => ({value: ""});
+  const form = {handlers: {}, addEventListener(name, handler) {this.handlers[name] = handler;}, elements: Object.fromEntries([
+    "name", "summary", "target_roles", "preferred_locations", "skills", "work_authorization",
+    "citizenship", "enrollment", "graduation", "sponsorship", "experience_years", "other_eligibility",
+  ].map(name => [name, field()]))};
+  const selector = {value: "", options: [], replaceChildren() {this.options = [];}, append(option) {this.options.push(option);}};
+  const selectedJobCopy = {textContent: ""};
+  const context = {
+    state: {profileEditVersion: 0, selectedJob: null},
+    $: value => value === "#profile-form" ? form : value === "#prepare-form" ? {elements: {resume_id: selector}} : selectedJobCopy,
+    api: url => url === "/api/profile" ? new Promise(resolve => {resolveProfile = resolve;}) : Promise.resolve([]),
+    renderResumes() {}, renderApplications() {}, element: (_tag, _className, text) => ({value: "", textContent: text}),
+    notify() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(`${loader}${inputListener}\nglobalThis.loadResumeDesk = loadResumeDesk;`, context);
+
+  const pendingLoad = context.loadResumeDesk();
+  form.elements.summary.value = "My edits while loading";
+  form.handlers.input();
+  resolveProfile({name: "Saved", summary: "Old saved text", target_roles: [], preferred_locations: [], skills: [], eligibility_facts: {}});
+  await pendingLoad;
+
+  assert.equal(form.elements.summary.value, "My edits while loading");
+});
+
+test("Job Board defaults to confirmed U.S. locations and labels unclear ones", async () => {
+  const app = await readFile(new URL("../src/careeros/static/app.js", import.meta.url), "utf8");
+  const html = await readFile(new URL("../src/careeros/static/index.html", import.meta.url), "utf8");
+
+  assert.match(html, /id="us-only"[^>]*checked/);
+  assert.match(html, /id="us-only"[^>]*United States only|United States only[^<]*<\/span>/);
+  assert.match(app, /params\.set\("us_only", String\(\$\("#us-only"\)\.checked\)\)/);
+  assert.match(app, /location_status/);
+  assert.match(app, /employer_verification/);
+  assert.match(app, /Check employer posting/);
+  assert.match(app, /\/verify/);
+});
+
+test("Job Board explains typed verification outcomes, provenance, and safe rechecks", async () => {
+  const app = await readFile(new URL("../src/careeros/static/app.js", import.meta.url), "utf8");
+
+  for (const label of [
+    "Employer verified", "Access restricted", "Posting closed", "Employer or role mismatch",
+    "Posting needs more detail", "Temporary check problem", "Unsafe destination blocked",
+  ]) assert.ok(app.includes(label), `missing outcome label: ${label}`);
+  for (const label of ["Source listing", "Employer posting", "Application page", "Checked"]) {
+    assert.ok(app.includes(label), `missing provenance label: ${label}`);
+  }
+  assert.match(app, /verification\.can_recheck/);
+  assert.match(app, /verification\.retry_eligible/);
+  assert.ok(app.includes("Retry employer check"));
+});
+
+test("Job Hunter worker surfaces the latest scan outcome summary", async () => {
+  const app = await readFile(new URL("../src/careeros/static/app.js", import.meta.url), "utf8");
+  assert.match(app, /scan_summary/);
+  assert.ok(app.includes("Verified postings"));
+  assert.ok(app.includes("Source failures"));
+  assert.ok(app.includes("Scheduled retries"));
+});
+
 function makeElement(tag = "div", className = "", textContent = "") {
   return {
     tag, className, textContent, children: [], handlers: {}, dataset: {}, value: "", hidden: false,
