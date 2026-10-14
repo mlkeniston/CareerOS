@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import threading
 
 import httpx
 import pytest
@@ -569,7 +570,7 @@ def test_partial_transient_outage_is_a_warning(db):
     assert outcome.result['source_warnings']
 
 
-def test_discovery_reports_persisted_verification_outcomes_and_retry_count(db):
+def test_discovery_scan_summary_excludes_cached_jobs_not_processed_in_this_scan(db):
     repository = JobRepository(db)
     repository.upsert_many([
         _job('Verified Software Intern', 'internship', 'Build APIs'),
@@ -593,12 +594,73 @@ def test_discovery_reports_persisted_verification_outcomes_and_retry_count(db):
 
     outcome = service.handle_task(queue.get(queue.enqueue('job_discovery', {}, 'ollama')))
 
-    assert outcome.result['verification_counts'] == {
-        'access_restricted': 1,
-        'transient_error': 1,
-        'verified': 1,
-    }
-    assert outcome.result['transient_retries'] == 1
+    assert outcome.result['verification_counts'] == {}
+    assert outcome.result['transient_retries'] == 0
+
+
+def test_automatic_check_reserves_attempt_before_network_request(client):
+    app = client.app
+    app.state.profile_repository.update('', '', ['Software Engineer'], [], [])
+    job = app.state.job_repository.upsert_many([_job('Software Engineer Intern', 'internship', 'Build APIs')])
+    saved = app.state.job_repository.recent()[0]
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingVerifier:
+        calls = 0
+
+        def verify(self, *args):
+            self.calls += 1
+            entered.set()
+            assert release.wait(5)
+            return VerificationResult('held', 'Temporary failure', None, '2026-10-13T12:00:00+00:00',
+                                      outcome='transient_error')
+
+    verifier = BlockingVerifier()
+    app.state.job_discovery_service.verifier = verifier
+    errors = []
+    thread = threading.Thread(
+        target=lambda: app.state.job_discovery_service.check_job(saved, automatic=True), daemon=True,
+    )
+    thread.start()
+    assert entered.wait(5)
+    try:
+        second = app.state.job_discovery_service.check_job(saved, automatic=True)
+        assert second.outcome == 'transient_error'
+        assert verifier.calls == 1
+    except Exception as exc:  # preserve the assertion context after releasing the worker
+        errors.append(exc)
+    finally:
+        release.set()
+        thread.join(5)
+    assert not errors
+    assert not thread.is_alive()
+    assert app.state.job_repository.get_verification(saved.id)['attempts'] == 1
+
+
+def test_application_dispatch_failure_does_not_stop_later_listing(client):
+    app = client.app
+    app.state.profile_repository.update('', '', ['Software Engineer'], [], [])
+    app.state.resume_repository.create('Current', 'Built Python APIs')
+    jobs = [_job('Software Engineer Intern A', 'internship', 'Build APIs'),
+            _job('Software Engineer Intern B', 'internship', 'Build APIs')]
+    app.state.job_discovery_service.sources = [_Source('fixture', SourceResult(jobs, []))]
+    original = app.state.application_service.create_automatic
+    calls = 0
+
+    def flaky_dispatch(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError('isolated dispatch race')
+        return original(*args)
+
+    app.state.application_service.create_automatic = flaky_dispatch
+    outcome = _run_discovery(client)
+
+    assert outcome.result['listing_failures'] == 1
+    assert outcome.result['applications_queued'] == 1
+    assert len(app.state.application_service.list()) == 1
 
 
 def test_same_employer_role_from_two_sources_queues_once_and_recovers_handoff(client):

@@ -94,16 +94,10 @@ class JobDiscoveryService:
             1 for job in self.repository.recent(limit=500)
             if classify_location(job.location) == UNKNOWN
         )
-        applications_queued = self._queue_application()
+        application_scan = self._queue_application()
+        applications_queued = application_scan['queued']
         outreach_queued = self._queue_outreach()
         portfolio_queued = self._queue_portfolio()
-        recent_jobs = self.repository.recent(limit=500)
-        verifications = self.repository.verifications([job.id for job in recent_jobs if job.id])
-        verification_counts = Counter(record['outcome'] for record in verifications.values())
-        transient_retries = sum(
-            1 for record in verifications.values()
-            if record['outcome'] == 'transient_error' and record['attempts'] < 3 and record['next_retry_at']
-        )
         result = {
             "jobs_found": jobs_found,
             "jobs_matched": jobs_matched,
@@ -115,19 +109,21 @@ class JobDiscoveryService:
             "successful_sources": successful_sources,
             "failed_sources": failed_sources,
             "source_warnings": warnings[:10],
-            "verification_counts": dict(sorted(verification_counts.items())),
-            "transient_retries": transient_retries,
+            "verification_counts": application_scan['verification_counts'],
+            "transient_retries": application_scan['transient_retries'],
+            "listing_failures": application_scan['listing_failures'],
         }
         return TaskOutcome("completed", result)
 
-    def _queue_application(self) -> int:
+    def _queue_application(self) -> dict:
+        scan = {'queued': 0, 'verification_counts': {}, 'transient_retries': 0, 'listing_failures': 0}
         if not all((self.applications, self.profiles, self.resumes, self.verifier)):
-            return 0
+            return scan
         profile = self.profiles.get()
         resume = self.resumes.most_recent()
         roles = [role.strip() for role in (profile.target_roles or []) if isinstance(role, str) and role.strip()]
         if resume is None or not roles:
-            return 0
+            return scan
         locations = [location.strip() for location in (profile.preferred_locations or []) if isinstance(location, str) and location.strip()]
         candidates = []
         for job in self.repository.recent(limit=500):
@@ -142,52 +138,56 @@ class JobDiscoveryService:
         candidates.sort(key=lambda item: item[:4], reverse=True)
         queued = 0
         seen = set()
+        outcomes = Counter()
         for candidate in candidates[:50]:
             job = candidate[4]
-            previous = self.repository.get_verification(job.id)
-            if previous and previous['status'] == 'held' and not _retry_due(previous):
-                verification = VerificationResult(**{key: previous[key] for key in (
-                    'status', 'reason', 'final_url', 'checked_at', 'text', 'fingerprint', 'outcome',
-                    'checked_url', 'evidence_summary', 'posting_evidence')})
-            else:
+            try:
                 verification = self.check_job(job, automatic=True)
-            gates = evaluate_application_gates(job, profile, verification)
-            with self.repository.db.connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                for gate in gates:
-                    conn.execute(
-                        """INSERT INTO job_gate_results(job_id,name,passed,reason,checked_at) VALUES(?,?,?,?,?)
-                           ON CONFLICT(job_id,name) DO UPDATE SET passed=excluded.passed,
-                           reason=excluded.reason,checked_at=excluded.checked_at""",
-                        (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at),
-                    )
-            if not all(gate.passed for gate in gates):
+                outcomes[verification.outcome] += 1
+                persisted = self.repository.get_verification(job.id)
+                if persisted and persisted['outcome'] == 'transient_error' and persisted['next_retry_at']:
+                    scan['transient_retries'] += 1
+                gates = evaluate_application_gates(job, profile, verification)
+                with self.repository.db.connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    for gate in gates:
+                        conn.execute(
+                            """INSERT INTO job_gate_results(job_id,name,passed,reason,checked_at) VALUES(?,?,?,?,?)
+                               ON CONFLICT(job_id,name) DO UPDATE SET passed=excluded.passed,
+                               reason=excluded.reason,checked_at=excluded.checked_at""",
+                            (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at),
+                        )
+                if not all(gate.passed for gate in gates):
+                    continue
+                identity = f"application:{verification.final_url}:{_normalize(job.company)}:{_normalize(job.title)}:{resume.id}"
+                fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+                if fingerprint in seen:
+                    continue
+                if queued < 10:
+                    # create_automatic claims the fingerprint and queues in one BEGIN IMMEDIATE transaction.
+                    created = self.applications.create_automatic(job.id, resume.id, fingerprint)
+                    queued += int(created is not None)
+                seen.add(fingerprint)
+                # Recover a missing handoff after a crash between dispatch and event recording.
+                with self.repository.db.connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    dispatch = conn.execute(
+                        "SELECT d.task_id,a.job_id,a.resume_id FROM autopilot_dispatches d "
+                        "JOIN applications a ON a.task_id=d.task_id WHERE d.fingerprint=? AND d.kind='application'",
+                        (fingerprint,),
+                    ).fetchone()
+                    if dispatch:
+                        self.workflows.record(
+                            conn, idempotency_key=f"eligible:{fingerprint}:{dispatch['task_id']}",
+                            task_id=dispatch['task_id'], object_type="job", object_id=dispatch["job_id"],
+                            from_worker="job_discovery", to_worker="application", event_type="application_eligible",
+                            payload={"job_id": dispatch["job_id"], "resume_id": dispatch["resume_id"], "gates_passed": True},
+                        )
+            except Exception:
+                scan['listing_failures'] += 1
                 continue
-            identity = f"application:{verification.final_url}:{_normalize(job.company)}:{_normalize(job.title)}:{resume.id}"
-            fingerprint = hashlib.sha256(identity.encode()).hexdigest()
-            if fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            if queued < 10:
-                # create_automatic claims the fingerprint and queues in one BEGIN IMMEDIATE transaction.
-                created = self.applications.create_automatic(job.id, resume.id, fingerprint)
-                queued += int(created is not None)
-            # Recover a missing handoff after a crash between dispatch and event recording.
-            with self.repository.db.connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                dispatch = conn.execute(
-                    "SELECT d.task_id,a.job_id,a.resume_id FROM autopilot_dispatches d "
-                    "JOIN applications a ON a.task_id=d.task_id WHERE d.fingerprint=? AND d.kind='application'",
-                    (fingerprint,),
-                ).fetchone()
-                if dispatch:
-                    self.workflows.record(
-                        conn, idempotency_key=f"eligible:{fingerprint}:{dispatch['task_id']}",
-                        task_id=dispatch['task_id'], object_type="job", object_id=dispatch["job_id"],
-                        from_worker="job_discovery", to_worker="application", event_type="application_eligible",
-                        payload={"job_id": dispatch["job_id"], "resume_id": dispatch["resume_id"], "gates_passed": True},
-                    )
-        return queued
+        scan.update({'queued': queued, 'verification_counts': dict(sorted(outcomes.items()))})
+        return scan
 
     def check_job(self, job, *, automatic: bool = False) -> VerificationResult:
         """Check one public posting and store its deterministic gates, without drafting."""
@@ -195,6 +195,13 @@ class JobDiscoveryService:
             raise ValueError('Confirm a U.S. location before checking this employer posting')
         if self.verifier is None:
             raise RuntimeError('Employer verification is unavailable')
+        reserved_attempts = None
+        if automatic:
+            reserved_attempts = self._reserve_automatic_check(job.id)
+            if reserved_attempts is None:
+                previous = self.repository.get_verification(job.id)
+                if previous is not None:
+                    return _verification_result(previous)
         try:
             verification = self.verifier.verify(job.employer_url or job.url, job.company, job.title)
         except (OSError, httpx.TransportError):
@@ -208,10 +215,10 @@ class JobDiscoveryService:
         gates = evaluate_application_gates(job, self.profiles.get(), verification)
         with self.repository.db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            previous = conn.execute('SELECT attempts,status FROM job_verifications WHERE job_id=?', (job.id,)).fetchone()
+            previous = conn.execute('SELECT attempts FROM job_verifications WHERE job_id=?', (job.id,)).fetchone()
             attempts = previous['attempts'] if previous else 0
             if automatic:
-                attempts = min(3, (attempts if previous and previous['status'] == 'held' else 0) + 1) if verification.outcome != 'verified' else 0
+                attempts = reserved_attempts if verification.outcome != 'verified' else 0
             self.repository.save_verification(conn, job.id, verification, attempts=attempts)
             for gate in gates:
                 conn.execute('''INSERT INTO job_gate_results(job_id,name,passed,reason,checked_at) VALUES(?,?,?,?,?)
@@ -219,6 +226,25 @@ class JobDiscoveryService:
                                 reason=excluded.reason,checked_at=excluded.checked_at''',
                              (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at))
         return verification
+
+    def _reserve_automatic_check(self, job_id: str) -> int | None:
+        """Claim one network attempt before I/O so concurrent scans share the cap."""
+        with self.repository.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            previous = conn.execute('SELECT * FROM job_verifications WHERE job_id=?', (job_id,)).fetchone()
+            if previous is not None:
+                record = dict(previous)
+                if not _retry_due(record):
+                    return None
+                attempts = record['attempts'] + 1
+            else:
+                attempts = 1
+            placeholder = VerificationResult(
+                'held', 'Employer check is in progress', None, now(), outcome='transient_error',
+                evidence_summary='Automatic employer check reserved',
+            )
+            self.repository.save_verification(conn, job_id, placeholder, attempts=attempts)
+        return attempts
 
     def _queue_outreach(self) -> bool:
         if not all((self.outreach, self.profiles, self.resumes)):
@@ -295,6 +321,13 @@ def _retry_due(record: dict) -> bool:
         return datetime.fromisoformat(record['next_retry_at']) <= datetime.fromisoformat(now())
     except (ValueError, TypeError):
         return False
+
+
+def _verification_result(record: dict) -> VerificationResult:
+    return VerificationResult(**{key: record[key] for key in (
+        'status', 'reason', 'final_url', 'checked_at', 'text', 'fingerprint', 'outcome',
+        'checked_url', 'evidence_summary', 'posting_evidence',
+    )})
 
 
 def _normalize(value: str) -> str:
