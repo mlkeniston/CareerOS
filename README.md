@@ -102,6 +102,22 @@ CAREEROS_LEVER_SITES=another-company
 
 The connectors fetch public board listings without credentials. Feed refresh sends only your search filters; it never sends your profile or resume. If a feed is unavailable, cached listings remain searchable.
 
+### Employer checks and retries
+
+CareerOS keeps source, employer, and application links separate so you can see where each listing came from. Before an automatic application package is prepared, CareerOS checks the public employer posting and requires the employer, role, U.S. location, posting detail, and saved eligibility facts to pass. Every result remains visible on the Job Board:
+
+- **Employer verified** means the public primary posting matched the expected company and role and contained enough current detail.
+- **Access restricted** means the public page returned HTTP 403 or otherwise required access CareerOS does not have. It does not mean the job is fake or closed. CareerOS does not bypass sign-in pages, CAPTCHAs, or access controls.
+- **Posting closed** covers an explicit closure notice or a stale HTTP 404/410 page.
+- **Employer or role mismatch** means the primary posting did not match the listing identity.
+- **Posting needs more detail** means the public page did not provide enough evidence for the hard gate.
+- **Temporary check problem** covers timeouts, HTTP 429, and temporary server errors. CareerOS retries only this class, at most three automatic attempts with a delay between attempts.
+- **Unsafe destination blocked** means a URL, redirect, or DNS result pointed somewhere CareerOS will not contact, such as a private network address or an HTTPS downgrade.
+
+Use **Check employer posting** on a confirmed U.S. role for a manual recheck. A temporary outcome uses the clearer **Retry employer check** label. Manual checks use the same safety rules and do not create an application, call a planner, submit anything, or reset an exhausted automatic retry budget. Permanent and unsafe outcomes remain held until a later manual check produces verified evidence.
+
+Hover over the Job Hunter worker or click it to see the latest scan totals: roles found, verified postings, held outcomes by class, scheduled transient retries, and source failures. One failed source or listing does not stop unrelated listings, and cached jobs remain available when a source is temporarily unavailable.
+
 ## Data and safety
 
 - Profiles, resume text, saved listings, and task records live in the local SQLite database.
