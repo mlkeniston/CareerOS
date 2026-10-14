@@ -462,10 +462,16 @@ class ApplicationService:
             if not verified:
                 raise RuntimeError('Employer verification is missing or uncertain. Hold this job until it is verified.')
             expected = {'verified', 'country', 'role', 'location', 'details', 'eligibility'}
-            if {gate['name'] for gate in gates} != expected or not all(gate['passed'] for gate in gates):
-                raise RuntimeError('Application gates are missing or failed. Hold this job until all checks pass.')
+            present = {gate['name'] for gate in gates}
+            if present != expected:
+                missing = ', '.join(sorted(expected - present)) or 'none'
+                unexpected = ', '.join(sorted(present - expected)) or 'none'
+                raise RuntimeError(f'Application gate records are incomplete (missing: {missing}; unexpected: {unexpected}). Check the employer posting again.')
+            stored_failures = [f"{gate['name']}: {gate['reason']}" for gate in gates if not gate['passed']]
+            if stored_failures:
+                raise RuntimeError('Application is held by: ' + '; '.join(stored_failures))
             current = evaluate_application_gates(SimpleNamespace(**dict(job)), SimpleNamespace(**profile_data), SimpleNamespace(**dict(verification)))
-            failures = [gate.reason for gate in current if not gate.passed]
+            failures = [f'{gate.name}: {gate.reason}' for gate in current if not gate.passed]
             if failures:
                 raise RuntimeError('Application gates no longer pass: ' + '; '.join(failures))
         # Employer text is isolated from candidate sources; feeds are never

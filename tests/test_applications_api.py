@@ -22,7 +22,10 @@ def test_application_cannot_enqueue_without_verified_passing_job(client):
     seed_verified_application_job(client.app, inputs['job_id'])
     with client.app.state.db.connect() as conn:
         conn.execute("UPDATE job_gate_results SET passed=0 WHERE job_id=? AND name='eligibility'", (inputs['job_id'],))
-    assert client.post('/api/applications', json=inputs).status_code == 409
+    failed = client.post('/api/applications', json=inputs)
+    assert failed.status_code == 409
+    assert 'eligibility' in failed.json()['detail'].lower()
+    assert 'no unresolved material eligibility conditions' in failed.json()['detail'].lower()
 
 
 def test_manual_edit_revalidates_claims_and_stales_previous_clearance(client):

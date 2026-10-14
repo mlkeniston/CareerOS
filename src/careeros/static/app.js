@@ -28,6 +28,23 @@ function element(tag, className = "", text = "") {
   return node;
 }
 
+function addUsPersonEligibilityField() {
+  const sponsorship = $("#profile-form [name='sponsorship']");
+  if (!sponsorship || $("#profile-form [name='us_person']")) return;
+  const label = element("label", "", "Do you qualify as a U.S. Person?");
+  const select = element("select");
+  select.name = "us_person";
+  [["", "Unknown / not provided"], ["yes", "Yes"], ["no", "No"]].forEach(([value, text]) => {
+    const option = element("option", "", text);
+    option.value = value;
+    select.append(option);
+  });
+  label.append(select);
+  sponsorship.closest("label").insertAdjacentElement("afterend", label);
+}
+
+addUsPersonEligibilityField();
+
 async function api(url, options = {}) {
   const config = { ...options, headers: { ...(options.headers || {}) } };
   if (config.body && typeof config.body !== "string") {
@@ -904,7 +921,7 @@ async function loadResumeDesk() {
       form.elements.preferred_locations.value = (profile.preferred_locations || []).join(", ");
       form.elements.skills.value = (profile.skills || []).join(", ");
       const facts = profile.eligibility_facts || {};
-      const eligibilityFields = ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "experience_years"];
+      const eligibilityFields = ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "us_person", "experience_years"];
       eligibilityFields.forEach(key => { form.elements[key].value = facts[key] || ""; });
       form.elements.other_eligibility.value = Object.entries(facts).filter(([key]) => !eligibilityFields.includes(key)).map(([key, value]) => `${key} = ${value}`).join("\n");
     }
@@ -927,7 +944,7 @@ $("#profile-form").addEventListener("submit", async event => {
   const form = event.currentTarget;
   try {
     const eligibilityFacts = Object.create(null);
-    ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "experience_years"].forEach(key => {
+    ["work_authorization", "citizenship", "enrollment", "graduation", "sponsorship", "us_person", "experience_years"].forEach(key => {
       const value = form.elements[key].value.trim();
       if (value) eligibilityFacts[key] = value;
     });

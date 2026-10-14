@@ -98,8 +98,32 @@ def test_generic_intern_overlap_does_not_allow_unrelated_role():
     assert not _gates(title='Sales Intern', roles=['Software Intern'])['role'].passed
 
 
+def test_plural_internship_target_matches_singular_job_title():
+    assert _gates(title='Software Engineer Intern - Phoenix Site', roles=['Software Engineer Internships'])['role'].passed
+
+
 def test_remote_preference_remains_an_or_match():
     assert _gates(locations=['New York', 'Remote'])['location'].passed
+
+
+@pytest.mark.parametrize('preference', ['United States', 'USA', 'Nationwide'])
+def test_nationwide_preference_matches_any_confirmed_us_location(preference):
+    assert _gates(location='Phoenix, AZ', locations=[preference])['location'].passed
+
+
+def test_eligibility_ignores_headings_benefits_and_eeo_status_language():
+    text = (POSTING + ' Required Qualifications. You will gain experience building reliable systems. '
+            'The source requisition identifies these activities as central to the internship experience. '
+            'Academic, project, or practical programming experience in Python. '
+            'All applicants will be considered for employment regardless of race, color, religion, age, '
+            'national origin, ancestry, ethnicity, gender, disability, genetic information, citizenship '
+            'status, or any other legally protected characteristic.')
+    assert _gates(text=text)['eligibility'].passed
+
+
+def test_realistic_current_enrollment_clause_uses_attested_enrollment_fact():
+    condition = "Currently enrolled in an accredited bachelor's or master's degree program in Computer Science"
+    assert _gates(text=POSTING + ' ' + condition + '.', facts={'enrollment': 'yes'})['eligibility'].passed
 
 
 @pytest.mark.parametrize(('location', 'passed'), [
@@ -116,7 +140,7 @@ def test_application_country_gate_requires_clear_us_location(location, passed):
 @pytest.mark.parametrize('condition', ['Must be authorized to work in the United States',
     'Must be a US citizen', 'Must be currently enrolled in a degree program',
     'Must graduate between May 2027 and December 2027', 'Requires 3 years of experience',
-    'We cannot provide visa sponsorship', 'Must hold a security clearance'])
+    'We cannot provide visa sponsorship', 'Must hold a security clearance', 'Must qualify as a US Person'])
 def test_material_conditions_are_unknown_without_explicit_facts(condition):
     gate = _gates(text=POSTING + ' ' + condition + '.')['eligibility']
     assert not gate.passed
@@ -137,6 +161,8 @@ def test_material_conditions_are_unknown_without_explicit_facts(condition):
     ('Requires 3 years of experience', {'experience_years': '3'}, True),
     ('We cannot provide visa sponsorship', {'sponsorship': 'no'}, True),
     ('We cannot provide visa sponsorship', {'sponsorship': 'yes'}, False),
+    ('Must qualify as a US Person', {'us_person': 'yes'}, True),
+    ('Must qualify as a US Person', {'us_person': 'no'}, False),
     ('Must hold a security clearance', {'Must hold a security clearance': 'yes'}, True),
 ])
 def test_material_conditions_compare_only_explicit_user_facts(condition, facts, passed):

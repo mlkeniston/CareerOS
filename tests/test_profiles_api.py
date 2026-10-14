@@ -1,5 +1,7 @@
 import pytest
 
+from conftest import seed_verified_application_job
+
 
 def test_eligibility_defaults_to_empty_and_round_trips_locally(client):
     assert client.get('/api/profile').json()['eligibility_facts'] == {}
@@ -10,6 +12,22 @@ def test_eligibility_defaults_to_empty_and_round_trips_locally(client):
     assert client.get('/api/profile').json()['eligibility_facts'] == facts
     client.put('/api/profile', json={'name': 'Updated'})
     assert client.get('/api/profile').json()['eligibility_facts'] == facts
+
+
+def test_profile_update_refreshes_cached_application_gates(client):
+    job = client.post('/api/jobs/manual', json={
+        'title': 'Software Engineer Intern', 'company': 'Acme', 'location': 'Phoenix, AZ',
+        'url': 'https://jobs.example/role',
+    }).json()
+    seed_verified_application_job(client.app, job['id'])
+    client.put('/api/profile', json={'target_roles': ['Software Engineer Internships'], 'preferred_locations': ['Virginia']})
+    with client.app.state.db.connect() as conn:
+        assert conn.execute("SELECT passed FROM job_gate_results WHERE job_id=? AND name='location'", (job['id'],)).fetchone()['passed'] == 0
+    client.put('/api/profile', json={'target_roles': ['Software Engineer Internships'], 'preferred_locations': ['United States']})
+    with client.app.state.db.connect() as conn:
+        gates = {row['name']: row['passed'] for row in conn.execute('SELECT name,passed FROM job_gate_results WHERE job_id=?', (job['id'],))}
+    assert gates['role'] == 1
+    assert gates['location'] == 1
 
 
 @pytest.mark.parametrize('facts', [{'work_authorization': True}, {'a': 'x' * 501}, {'': 'yes'}, {'a': ''}, {'a': 'x\0y'}, {str(i): 'yes' for i in range(21)}])

@@ -189,6 +189,32 @@ class JobDiscoveryService:
         scan.update({'queued': queued, 'verification_counts': dict(sorted(outcomes.items()))})
         return scan
 
+    def refresh_application_gates(self, profile) -> int:
+        """Re-evaluate cached employer evidence after the user changes profile facts."""
+        jobs = self.repository.recent(limit=500)
+        verifications = self.repository.verifications([job.id for job in jobs if job.id])
+        refreshed = 0
+        with self.repository.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            for job in jobs:
+                saved = verifications.get(job.id)
+                if not saved:
+                    continue
+                verification = VerificationResult(
+                    saved['status'], saved['reason'], saved['final_url'], saved['checked_at'],
+                    saved['text'], saved['fingerprint'], saved['outcome'], saved['checked_url'],
+                    saved['evidence_summary'], saved['posting_evidence'],
+                )
+                for gate in evaluate_application_gates(job, profile, verification):
+                    conn.execute(
+                        """INSERT INTO job_gate_results(job_id,name,passed,reason,checked_at) VALUES(?,?,?,?,?)
+                           ON CONFLICT(job_id,name) DO UPDATE SET passed=excluded.passed,
+                           reason=excluded.reason,checked_at=excluded.checked_at""",
+                        (job.id, gate.name, int(gate.passed), gate.reason, verification.checked_at),
+                    )
+                refreshed += 1
+        return refreshed
+
     def check_job(self, job, *, automatic: bool = False) -> VerificationResult:
         """Check one public posting and store its deterministic gates, without drafting."""
         if not is_us_location(job.location):
@@ -351,16 +377,4 @@ def _role_overlap(title: str, role: str) -> int:
 
 
 def _matches_preferred_location(job, preferred_locations: list[str]) -> bool:
-    preferences = [_normalize(item) for item in preferred_locations if isinstance(item, str) and item.strip()]
-    if not preferences:
-        return True
-    location = _normalize(job.location)
-    remote = job.remote or "remote" in location.split()
-    padded_location = f" {location} "
-    for preference in preferences:
-        if "remote" in preference.split():
-            if remote:
-                return True
-        elif preference in padded_location:
-            return True
-    return False
+    return matches_preferred_location(job, preferred_locations)

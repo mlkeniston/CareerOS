@@ -20,7 +20,7 @@ def _normalize(value: str) -> str:
 
 def role_overlap(title: str, role: str) -> int:
     title_terms = set(_normalize(title).split())
-    role_terms = set(_normalize(role).split()) - {'intern', 'internship', 'junior', 'entry', 'level', 'graduate', 'new'}
+    role_terms = set(_normalize(role).split()) - {'intern', 'internship', 'internships', 'junior', 'entry', 'level', 'graduate', 'new'}
     return len(role_terms) if role_terms and role_terms <= title_terms else 0
 
 
@@ -28,6 +28,8 @@ def matches_preferred_location(job, preferences: list[str]) -> bool:
     preferences = [_normalize(value) for value in preferences if value.strip()]
     if not preferences:
         return True
+    if any(preference in {'united states', 'united states of america', 'usa', 'u s a', 'nationwide', 'anywhere in the us'} for preference in preferences):
+        return classify_location(job.location) == US
     location = _normalize(job.location)
     remote = job.remote or 'remote' in location.split()
     return any(remote if 'remote' in preference.split() else f' {preference} ' in f' {location} ' for preference in preferences)
@@ -82,12 +84,12 @@ def _condition_result(condition: str, facts: dict[str, str]) -> bool | None:
         return True
     if direct in {'no', 'false', 'not met'}:
         return False
-    c = condition.casefold()
-    families = [r'sponsor', r'citizen', r'authori[sz]|right to work|eligible to work',
+    c = ' '.join(condition.casefold().split())
+    families = [r'sponsor', r'citizen', r'us person', r'authori[sz]|right to work|eligible to work',
                 r'enroll', r'graduat', r'experience', r'clearance']
     if sum(bool(re.search(pattern, c)) for pattern in families) > 1:
         return None
-    if (' and ' in c or ' or ' in c) and not ('between' in c and 'graduat' in c):
+    if (' and ' in c or ' or ' in c) and not (('between' in c and 'graduat' in c) or 'enroll' in c):
         return None
     if 'sponsor' in c:
         if not re.fullmatch(r'(?:we (?:cannot|do not|are unable to) (?:provide|offer) (?:visa )?sponsorship|no (?:visa )?sponsorship(?: available| provided| offered)?)', c):
@@ -97,11 +99,14 @@ def _condition_result(condition: str, facts: dict[str, str]) -> bool | None:
     if 'citizen' in c:
         match = re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:a )?(' + _COUNTRY_PATTERN + r') citizen', c)
         return _country_fact_matches(facts.get('citizenship'), _country(match[1])) if match else None
+    if 'us person' in c:
+        value = facts.get('us_person')
+        return value == 'yes' if value in {'yes', 'no'} else None
     if re.search(r'authori[sz]|right to work|eligible to work', c):
         match = re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:authorized|authorised|eligible) to work in (?:the )?(' + _COUNTRY_PATTERN + r')(?: to join us)?', c)
         return _country_fact_matches(facts.get('work_authorization'), _country(match[1])) if match else None
     if 'enroll' in c:
-        if not re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:currently )?enrolled(?: in a degree program)?', c):
+        if not re.fullmatch(r'(?:(?:must be|applicants must be|candidates must be) )?(?:currently )?enrolled(?: in .{0,240}\bdegree program(?: in .{1,160})?)?', c):
             return None
         value = facts.get('enrollment')
         return value == 'yes' if value in {'yes', 'no'} else None
@@ -133,10 +138,19 @@ def _eligibility(text: str, facts: dict[str, str]) -> GateResult:
         condition = condition.strip()
         if not condition:
             continue
-        material = re.search(r'(?i)\b(citizen\w*|authori[sz]\w*|enroll\w*|graduat\w*|sponsor\w*|security clearance|right to work|eligible to work|degree|bachelor\w*|master\w*|phd|experience|work permit|visa|residen\w*|years old|persons only)\b', condition)
+        material = re.search(r'(?i)\b(citizen\w*|authori[sz]\w*|enroll\w*|graduat\w*|sponsor\w*|security clearance|right to work|eligible to work|degree|bachelor\w*|master\w*|phd|experience|work permit|visa|residen\w*|years old|us persons?|persons only)\b', condition)
         years = re.search(r'(?i)\b\d+\+?\s+years?\b.*\bexperience\b', condition)
-        other = re.search(r'(?i)\b(must|required|requires?|minimum|at least)\b', condition)
-        if not (material or years or other):
+        # Headings and descriptive/EEO prose are not candidate conditions.
+        if re.search(r'(?i)\b(equal opportunity|all applicants will be considered|legally protected characteristic)\b', condition):
+            continue
+        if re.search(r'(?i)\b(?:gain|gaining|develop)\s+(?:[a-z]+\s+){0,3}experience\b', condition):
+            continue
+        experience = re.search(r'(?i)\bexperience\b', condition)
+        other_material = re.search(r'(?i)\b(citizen\w*|authori[sz]\w*|enroll\w*|graduat\w*|sponsor\w*|security clearance|right to work|eligible to work|degree|bachelor\w*|master\w*|phd|work permit|visa|residen\w*|years old|us persons?|persons only)\b', condition)
+        word_years = re.search(r'(?i)\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\+?\s+years?\b', condition)
+        if experience and not other_material and not years and not word_years:
+            continue
+        if not (material or years):
             continue
         result = _condition_result(condition, facts)
         if result is None:

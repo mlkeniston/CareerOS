@@ -35,7 +35,11 @@ def update_profile(payload: ProfileInput, request: Request):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     facts = payload.eligibility_facts if "eligibility_facts" in payload.model_fields_set else None
-    return request.app.state.profile_repository.update(payload.name, payload.summary, payload.target_roles, payload.preferred_locations, payload.skills, facts)
+    profile = request.app.state.profile_repository.update(payload.name, payload.summary, payload.target_roles, payload.preferred_locations, payload.skills, facts)
+    discovery = getattr(request.app.state, 'job_discovery_service', None)
+    if discovery is not None:
+        discovery.refresh_application_gates(profile)
+    return profile
 
 
 @router.post("/api/resumes", status_code=201)
