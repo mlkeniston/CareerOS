@@ -102,6 +102,25 @@ def test_malformed_local_planner_output_uses_evidence_preserving_base_draft(clie
     assert "evidence-preserving" in saved["draft"]["next_steps"][0]
 
 
+def test_slow_initial_local_draft_uses_safe_fallback_without_retry(client, fake_planner):
+    import httpx
+    resume = client.post('/api/resumes', json={'name': 'Base', 'text': 'Built a Python API'}).json()
+    job = client.post('/api/jobs/manual', json={'title': 'Backend Intern', 'company': 'Acme', 'url': 'https://jobs.example/1'}).json()
+    seed_verified_application_job(client.app, job['id'])
+    started = client.post('/api/applications', json={'job_id': job['id'], 'resume_id': resume['id'], 'provider': 'ollama'}).json()
+    def timeout(*args):
+        raise httpx.ReadTimeout('slow generation', request=httpx.Request('POST', 'http://127.0.0.1:11434'))
+    fake_planner.generate = timeout
+    client.app.state.worker.run_once()
+    saved = client.app.state.application_service.get(started['id'])
+    assert saved.status == 'manager_review'
+    assert saved.draft['resume_text'] == '- Built a Python API'
+    task = client.app.state.queue.get(started['task_id'])
+    assert task.status == 'needs_review'
+    assert task.attempt_count == 1
+    assert task.available_at is None
+
+
 def test_application_requests_its_exact_json_contract_from_local_planner(client, fake_planner):
     resume = client.post("/api/resumes", json={"name": "Backend", "text": "Python"}).json()
     job = client.post("/api/jobs/manual", json={"title": "Backend Intern", "company": "Acme", "location": "NYC", "url": "https://jobs.example/1"}).json()

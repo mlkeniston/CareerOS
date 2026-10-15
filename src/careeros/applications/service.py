@@ -175,24 +175,34 @@ class ApplicationService:
                 _application_instruction(),
                 response_schema=_application_schema(),
             )
+            result = None
             try:
                 if self._model(task.provider) != executing_model:
                     raise RuntimeError('Provider model changed. Review a fresh preview and confirm this task.')
                 result = self.gateway.generate(task.provider, request, task.cloud_confirmed)
+            except httpx.ReadTimeout as exc:
+                if revision or task.provider != 'ollama':
+                    raise RetryableTaskError('Local application provider timed out. Waiting to retry.') from exc
+                # Initial local drafts have a deterministic evidence-only path;
+                # avoid several minutes of retries when a small model stalls.
             except (ProviderUnavailable, httpx.TransportError) as exc:
                 if task.provider == 'ollama':
                     raise RetryableTaskError('Local application provider is unavailable. Waiting to retry.') from exc
                 raise
-            try:
-                if len(result.text) > 500000:
-                    raise InvalidPlannerOutput('Planner response is too large')
-                draft = ApplicationDraft.parse(json.loads(result.text))
-                self._validate(draft, application.snapshot)
-            except (json.JSONDecodeError, InvalidPlannerOutput) as exc:
-                if revision or task.provider != 'ollama':
-                    raise InvalidPlannerOutput('Planner returned an invalid application draft: ' + str(exc)) from exc
+            if result is None:
                 draft = _safe_base_draft(application.snapshot)
                 self._validate(draft, application.snapshot)
+            else:
+                try:
+                    if len(result.text) > 500000:
+                        raise InvalidPlannerOutput('Planner response is too large')
+                    draft = ApplicationDraft.parse(json.loads(result.text))
+                    self._validate(draft, application.snapshot)
+                except (json.JSONDecodeError, InvalidPlannerOutput) as exc:
+                    if revision or task.provider != 'ollama':
+                        raise InvalidPlannerOutput('Planner returned an invalid application draft: ' + str(exc)) from exc
+                    draft = _safe_base_draft(application.snapshot)
+                    self._validate(draft, application.snapshot)
             with self.db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
                 changed = conn.execute("""UPDATE applications SET status='needs_review',draft_json=?,draft_version=draft_version+1,
