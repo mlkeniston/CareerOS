@@ -74,7 +74,7 @@ def test_export_requires_explicit_approval(application_with_clearance, state):
 
 
 @pytest.mark.parametrize('action', ['approve', 'export'])
-@pytest.mark.parametrize('change', ['text', 'fingerprint', 'final_url', 'held', 'exception'])
+@pytest.mark.parametrize('change', ['text', 'final_url', 'held', 'exception'])
 def test_fresh_fetch_failure_holds_without_refreshing_snapshot(application_with_clearance, action, change):
     p = application_with_clearance
     if action == 'export':
@@ -98,6 +98,17 @@ def test_fresh_fetch_failure_holds_without_refreshing_snapshot(application_with_
     with p.service.db.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM application_exports').fetchone()[0] == 0
     assert not (p.service.db.path.parent / 'exports' / f'application-{p.id}.zip').exists()
+
+
+@pytest.mark.parametrize('action', ['approve', 'export'])
+def test_fresh_raw_page_fingerprint_change_does_not_block_unchanged_posting(application_with_clearance, action):
+    p = application_with_clearance
+    if action == 'export':
+        assert p.approve().status_code == 200
+    before = p.service.get(p.id).snapshot
+    p.verifier.result = replace(p.verifier.result, fingerprint='new-raw-page-version')
+    assert getattr(p, action)().status_code == 200
+    assert p.service.get(p.id).snapshot == before
 
 
 def test_stale_clearance_and_invalid_claims_block_package(application_with_clearance):

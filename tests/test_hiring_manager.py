@@ -297,6 +297,19 @@ def test_approval_refuses_draft_that_changes_during_validation(hiring_pipeline, 
     assert p.service.get(p.id).status == 'needs_review'
 
 
+def test_fresh_raw_page_fingerprint_may_change_when_extracted_posting_is_identical(hiring_pipeline, monkeypatch):
+    from careeros.jobs.verification import VerificationResult
+    p = hiring_pipeline
+    frozen = p.service.get(p.id).snapshot['job']['verification']
+    current = VerificationResult('verified', frozen['reason'], frozen['final_url'], 'fresh-check',
+                                 frozen['text'], 'different-raw-page-version')
+    monkeypatch.setattr(p.service.posting_verifier, 'verify', lambda *args: current)
+    review(p, PASS)
+    application = p.service.get(p.id)
+    assert application.status == 'needs_review'
+    assert application.hold_reason is None
+
+
 @pytest.mark.parametrize('changed_field', ['text', 'fingerprint', 'final_url', 'title', 'company', 'location', 'source_url'])
 def test_changed_posting_before_manager_review_persists_hold(hiring_pipeline, changed_field):
     p = hiring_pipeline

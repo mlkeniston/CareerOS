@@ -297,7 +297,10 @@ class ApplicationService:
             if current.status != 'verified':
                 raise ApplicationPostingChanged('Employer posting cannot be verified: ' + current.reason)
             verification = frozen['verification']
-            changed = [field for field in ('text', 'fingerprint', 'final_url')
+            # The body hash can change when an employer rotates scripts, tokens,
+            # or other non-posting HTML. Extracted posting text and URL are the
+            # stable material identity; a fingerprint must still be present.
+            changed = [field for field in ('text', 'final_url')
                        if _posting_value(getattr(current, field), field) != _posting_value(verification.get(field), field)]
             if changed or not current.fingerprint:
                 raise ApplicationPostingChanged('Employer posting changed or is uncertain (' + ', '.join(changed) + '). Prepare a new verified application.')
