@@ -94,6 +94,18 @@ class JobRepository:
         """Return the newest cached listings for matching and office summaries."""
         return self.search(JobQuery(limit=limit))
 
+    def with_cached_verification(self, limit: int = 10_000) -> list[JobListing]:
+        """Return jobs whose cached employer evidence may need gate refresh."""
+        if not 1 <= limit <= 10_000:
+            raise ValueError('verification refresh limit must be between 1 and 10000')
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT jobs.* FROM jobs JOIN job_verifications ON job_verifications.job_id=jobs.id "
+                "ORDER BY coalesce(jobs.published_at,'') DESC,jobs.company,jobs.title LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_job(row) for row in rows]
+
     def get_verification(self, job_id: str) -> dict | None:
         return self.verifications([job_id]).get(job_id)
 

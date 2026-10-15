@@ -191,8 +191,11 @@ class JobDiscoveryService:
 
     def refresh_application_gates(self, profile) -> int:
         """Re-evaluate cached employer evidence after the user changes profile facts."""
-        jobs = self.repository.recent(limit=500)
-        verifications = self.repository.verifications([job.id for job in jobs if job.id])
+        jobs = self.repository.with_cached_verification(limit=10_000)
+        ids = [job.id for job in jobs if job.id]
+        verifications = {}
+        for start in range(0, len(ids), 500):
+            verifications.update(self.repository.verifications(ids[start:start + 500]))
         refreshed = 0
         with self.repository.db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')

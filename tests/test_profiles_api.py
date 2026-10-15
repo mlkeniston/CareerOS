@@ -1,6 +1,7 @@
 import pytest
 
 from conftest import seed_verified_application_job
+from careeros.jobs.models import JobListing
 
 
 def test_eligibility_defaults_to_empty_and_round_trips_locally(client):
@@ -23,6 +24,11 @@ def test_profile_update_refreshes_cached_application_gates(client):
     client.put('/api/profile', json={'target_roles': ['Software Engineer Internships'], 'preferred_locations': ['Virginia']})
     with client.app.state.db.connect() as conn:
         assert conn.execute("SELECT passed FROM job_gate_results WHERE job_id=? AND name='location'", (job['id'],)).fetchone()['passed'] == 0
+    client.app.state.job_repository.upsert_many([
+        JobListing('fixture', f'filler-{index}', 'Filler', 'Example', 'Phoenix, AZ', 'other',
+                   f'https://jobs.example/filler-{index}', '', '9999-01-01', '9999-01-01')
+        for index in range(501)
+    ])
     client.put('/api/profile', json={'target_roles': ['Software Engineer Internships'], 'preferred_locations': ['United States']})
     with client.app.state.db.connect() as conn:
         gates = {row['name']: row['passed'] for row in conn.execute('SELECT name,passed FROM job_gate_results WHERE job_id=?', (job['id'],))}
