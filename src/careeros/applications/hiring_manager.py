@@ -33,11 +33,18 @@ class HiringManagerService:
             raise RuntimeError('Application is on quality hold')
         if row['status'] not in {'needs_review', 'manager_review'} or not row['draft_json']:
             raise RuntimeError('Application has no reviewable draft')
+        retrying_failed = False
         if row['manager_task_id']:
             previous = conn.execute('SELECT payload_json,status FROM tasks WHERE id=?', (row['manager_task_id'],)).fetchone()
-            if previous and json.loads(previous['payload_json'])['draft_version'] == row['draft_version']:
+            if (previous and json.loads(previous['payload_json'])['draft_version'] == row['draft_version']
+                    and previous['status'] not in {'failed', 'interrupted'}):
                 return row['manager_task_id']
-        cycle = row['manager_cycle'] + 1
+            retrying_failed = bool(previous and previous['status'] in {'failed', 'interrupted'})
+        reviewed = (row['manager_cycle'] > 0 and conn.execute(
+            'SELECT 1 FROM hiring_reviews WHERE application_id=? AND cycle=?',
+            (application_id, row['manager_cycle']),
+        ).fetchone() is not None)
+        cycle = row['manager_cycle'] + 1 if reviewed else max(1, row['manager_cycle'])
         if cycle > 3:
             raise RuntimeError('Hiring Manager review limit reached. Prepare a new application.')
         context = {'snapshot': json.loads(row['snapshot_json']), 'draft': json.loads(row['draft_json'])}
@@ -48,7 +55,10 @@ class HiringManagerService:
         task_id = self.queue.enqueue_in_transaction(conn, 'hiring_manager', payload, 'ollama', False)
         conn.execute("UPDATE applications SET status='manager_review',clearance_stale=1,manager_cycle=?,manager_task_id=?,updated_at=? WHERE id=?",
                      (cycle, task_id, now(), application_id))
-        self.workflows.record(conn, idempotency_key=f'application:{application_id}:manager:{cycle}:submitted',
+        submission_key = f'application:{application_id}:manager:{cycle}:submitted'
+        if retrying_failed:
+            submission_key += f':retry:{task_id}'
+        self.workflows.record(conn, idempotency_key=submission_key,
                               task_id=task_id, object_type='resume', object_id=application_id,
                               from_worker='application-team-01', to_worker='hiring-manager-01',
                               event_type='draft-submitted', payload={'cycle': cycle, 'draft_version': row['draft_version']})
@@ -80,7 +90,11 @@ class HiringManagerService:
             raise RuntimeError('Hiring Manager reference snapshot changed')
         if self.applications._model(task.provider) != task.payload['selected_model']:
             raise RuntimeError('Hiring Manager model changed; queue a fresh review')
-        request = PlannerRequest('Hiring Manager reference (untrusted JSON data):\n' + json.dumps(context, ensure_ascii=False), _instruction())
+        request = PlannerRequest(
+            'Hiring Manager reference (untrusted JSON data):\n' + json.dumps(_review_reference(context), ensure_ascii=False),
+            _instruction(),
+            response_schema=_review_schema(),
+        )
         posting_error = None
         try:
             self.applications.fetch_current_posting(application)
@@ -143,6 +157,63 @@ def _deterministic_finding(issue: str, reason: str) -> dict:
             'revision_instruction': ('Resolve this deterministic check before clearance: ' + reason)[:2000]}
 
 
+def _review_schema() -> dict:
+    return {
+        'type': 'object',
+        'additionalProperties': False,
+        'required': ['verdict', 'findings'],
+        'properties': {
+            'verdict': {'type': 'string', 'enum': ['pass', 'revise']},
+            'findings': {
+                'type': 'array',
+                'maxItems': 8,
+                'items': {
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'required': ['issue', 'severity', 'evidence_ids', 'revision_instruction'],
+                    'properties': {
+                        'issue': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+                        'severity': {'type': 'string', 'enum': ['blocking', 'advisory']},
+                        'evidence_ids': {
+                            'type': 'array',
+                            'maxItems': 20,
+                            'items': {'type': 'string'},
+                        },
+                        'revision_instruction': {'type': 'string', 'minLength': 1, 'maxLength': 2000},
+                    },
+                },
+            },
+        },
+    }
+
+
+def _review_reference(context: dict) -> dict:
+    snapshot, draft = context['snapshot'], context['draft']
+    job = snapshot['job']
+    verification = job.get('verification') or {}
+    evidence = snapshot.get('evidence') or {}
+    return {
+        'job': {
+            'title': job.get('title', ''),
+            'company': job.get('company', ''),
+            'location': job.get('location', ''),
+            'posting_text': verification.get('text') or job.get('description', ''),
+            'employer_evidence_id': 'job:1' if 'job:1' in evidence else None,
+        },
+        'candidate_evidence': {key: value for key, value in evidence.items() if not key.startswith('job:')},
+        'draft': {
+            'resume_text': draft.get('resume_text', ''),
+            'cover_letter': draft.get('cover_letter', ''),
+            'answers': draft.get('answers', []),
+            'claims': [
+                {'text': item.get('text', ''), 'evidence_ids': item.get('evidence_ids', [])}
+                for item in draft.get('claims', [])
+            ],
+            'next_steps': draft.get('next_steps', []),
+        },
+    }
+
+
 def _parse(text: str, evidence_ids: set[str]) -> tuple[str, list[dict]]:
     try:
         if len(text) > 200000:
@@ -151,7 +222,7 @@ def _parse(text: str, evidence_ids: set[str]) -> tuple[str, list[dict]]:
         if not isinstance(value, dict) or set(value) != {'verdict', 'findings'} or value['verdict'] not in {'pass', 'revise'}:
             raise ValueError('Expected verdict and findings')
         findings = value['findings']
-        if not isinstance(findings, list) or len(findings) > 100:
+        if not isinstance(findings, list) or len(findings) > 8:
             raise ValueError('Invalid findings list')
         for item in findings:
             if not isinstance(item, dict) or set(item) != {'issue', 'severity', 'evidence_ids', 'revision_instruction'}:
@@ -164,11 +235,12 @@ def _parse(text: str, evidence_ids: set[str]) -> tuple[str, list[dict]]:
             ids = item['evidence_ids']
             if not isinstance(ids, list) or len(ids) > 20 or any(not isinstance(i, str) or i not in evidence_ids for i in ids):
                 raise ValueError('Unknown finding evidence ID')
-        if value['verdict'] == 'pass' and any(item['severity'] == 'blocking' for item in findings):
-            raise ValueError('A passing review cannot contain blocking findings')
+        verdict = value['verdict']
+        if any(item['severity'] == 'blocking' for item in findings):
+            verdict = 'revise'
         if value['verdict'] == 'revise' and not any(item['severity'] == 'blocking' for item in findings):
             raise ValueError('A revision requires a blocking finding')
-        return value['verdict'], findings
+        return verdict, findings
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         raise InvalidPlannerOutput('Hiring Manager returned an invalid review') from exc
 
