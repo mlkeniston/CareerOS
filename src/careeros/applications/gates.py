@@ -18,9 +18,14 @@ def _normalize(value: str) -> str:
     return re.sub(r'[^a-z0-9+#]+', ' ', value.casefold()).strip()
 
 
+def _role_terms(value: str) -> set[str]:
+    canonical = {'engineering': 'engineer', 'engineers': 'engineer'}
+    return {canonical.get(term, term) for term in _normalize(value).split()}
+
+
 def role_overlap(title: str, role: str) -> int:
-    title_terms = set(_normalize(title).split())
-    role_terms = set(_normalize(role).split()) - {'intern', 'internship', 'internships', 'junior', 'entry', 'level', 'graduate', 'new'}
+    title_terms = _role_terms(title)
+    role_terms = _role_terms(role) - {'intern', 'internship', 'internships', 'junior', 'entry', 'level', 'graduate', 'new'}
     return len(role_terms) if role_terms and role_terms <= title_terms else 0
 
 
@@ -85,10 +90,16 @@ def _condition_result(condition: str, facts: dict[str, str]) -> bool | None:
     if direct in {'no', 'false', 'not met'}:
         return False
     c = ' '.join(condition.casefold().split())
+    if re.search(r'currently pursuing .{0,180}\b(?:bachelor|master|degree)', c):
+        value = facts.get('enrollment')
+        return value == 'yes' if value in {'yes', 'no'} else None
     families = [r'sponsor', r'citizen', r'us person', r'authori[sz]|right to work|eligible to work',
                 r'enroll', r'graduat', r'experience', r'clearance']
     if sum(bool(re.search(pattern, c)) for pattern in families) > 1:
         return None
+    if 'us person' in c:
+        value = facts.get('us_person')
+        return value == 'yes' if value in {'yes', 'no'} else None
     if (' and ' in c or ' or ' in c) and not (('between' in c and 'graduat' in c) or 'enroll' in c):
         return None
     if 'sponsor' in c:
@@ -98,10 +109,14 @@ def _condition_result(condition: str, facts: dict[str, str]) -> bool | None:
         return value in {'no', 'not needed', 'none'} if value in {'yes', 'no', 'not needed', 'none', 'needed'} else None
     if 'citizen' in c:
         match = re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:a )?(' + _COUNTRY_PATTERN + r') citizen', c)
-        return _country_fact_matches(facts.get('citizenship'), _country(match[1])) if match else None
-    if 'us person' in c:
-        value = facts.get('us_person')
-        return value == 'yes' if value in {'yes', 'no'} else None
+        if match:
+            return _country_fact_matches(facts.get('citizenship'), _country(match[1]))
+        if 'itar' in c and re.search(r'\bus citizen(?:ship)?\b', c):
+            person = facts.get('us_person')
+            if person in {'yes', 'no'}:
+                return person == 'yes'
+            return _country_fact_matches(facts.get('citizenship'), US.upper())
+        return None
     if re.search(r'authori[sz]|right to work|eligible to work', c):
         match = re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:authorized|authorised|eligible) to work in (?:the )?(' + _COUNTRY_PATTERN + r')(?: to join us)?', c)
         return _country_fact_matches(facts.get('work_authorization'), _country(match[1])) if match else None
@@ -133,6 +148,9 @@ def _condition_result(condition: str, facts: dict[str, str]) -> bool | None:
 def _eligibility(text: str, facts: dict[str, str]) -> GateResult:
     facts = {key.casefold().strip(): value.casefold().strip() for key, value in facts.items()}
     failures = []
+    # Keep U.S. abbreviations intact so their periods do not manufacture
+    # fragments such as "citizen, U" and "lawful permanent resident".
+    text = re.sub(r'(?i)\bU\s*\.\s*S\s*\.', 'US', text)
     # Sentence/line boundaries prevent one known fact covering another condition.
     for condition in re.split(r'[.!?;\n]+\s*', text):
         condition = condition.strip()
@@ -142,6 +160,12 @@ def _eligibility(text: str, facts: dict[str, str]) -> GateResult:
         years = re.search(r'(?i)\b\d+\+?\s+years?\b.*\bexperience\b', condition)
         # Headings and descriptive/EEO prose are not candidate conditions.
         if re.search(r'(?i)\b(equal opportunity|all applicants will be considered|legally protected characteristic)\b', condition):
+            continue
+        if re.search(r'(?i)\bUS person.{0,80}\baccording to .{0,80}\bdefinition\b', condition):
+            continue
+        if re.search(r'(?i)\b(?:some|certain) positions (?:will|may) require\b', condition):
+            continue
+        if re.search(r'(?i)\bprogram intended .{0,160}\bcurrently enrolled\b.{0,80}\brecent graduates\b', condition):
             continue
         if re.search(r'(?i)\b(?:gain|gaining|develop)\s+(?:[a-z]+\s+){0,3}experience\b', condition):
             continue

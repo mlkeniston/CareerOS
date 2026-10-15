@@ -102,6 +102,10 @@ def test_plural_internship_target_matches_singular_job_title():
     assert _gates(title='Software Engineer Intern - Phoenix Site', roles=['Software Engineer Internships'])['role'].passed
 
 
+def test_engineering_job_title_matches_engineer_target_role():
+    assert _gates(title='Software Engineering Intern', roles=['Software Engineer Internships'])['role'].passed
+
+
 def test_remote_preference_remains_an_or_match():
     assert _gates(locations=['New York', 'Remote'])['location'].passed
 
@@ -124,6 +128,24 @@ def test_eligibility_ignores_headings_benefits_and_eeo_status_language():
 def test_realistic_current_enrollment_clause_uses_attested_enrollment_fact():
     condition = "Currently enrolled in an accredited bachelor's or master's degree program in Computer Science"
     assert _gates(text=POSTING + ' ' + condition + '.', facts={'enrollment': 'yes'})['eligibility'].passed
+
+
+def test_us_person_fact_handles_itar_definition_and_non_specific_citizenship_notice():
+    text = (POSTING + ' Basic Qualifications (Required Skills & Experience) Currently pursuing a Bachelor’s '
+            'or Master’s degree in Computer Science, Software Engineering, or a related field. '
+            'Applicants must qualify as a U.S. person under the ITAR and the EAR, or a person to be approved '
+            'for an export license. A “U.S. person” according to the ITAR definition is a U.S. citizen, U.S. '
+            'lawful permanent resident (green card holder), or protected individual such as a refugee or asylee. '
+            'Some positions will require current U.S. Citizenship due to contract requirements. '
+            'ITAR U.S. Citizenship required About AV: AV isn’t for everyone. '
+            'ITAR U.S. Citizen, U.S. Permanent Resident (Green Card holder), asylee/refugee status.')
+    facts = {'enrollment': 'yes', 'us_person': 'yes'}
+    assert _gates(text=text, facts=facts)['eligibility'].passed
+
+
+def test_itar_us_person_requirement_remains_held_without_attested_fact():
+    text = POSTING + ' Applicants must qualify as a U.S. person under the ITAR and the EAR.'
+    assert not _gates(text=text)['eligibility'].passed
 
 
 @pytest.mark.parametrize(('location', 'passed'), [

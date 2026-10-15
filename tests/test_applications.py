@@ -87,7 +87,7 @@ def test_interrupted_cloud_application_is_visible_and_can_be_restarted(tmp_path)
         assert second["task_id"] != first["task_id"]
 
 
-def test_malformed_planner_output_saves_no_partial_packet(client, fake_planner):
+def test_malformed_local_planner_output_uses_evidence_preserving_base_draft(client, fake_planner):
     resume = client.post("/api/resumes", json={"name": "Backend", "text": "Python"}).json()
     job = client.post("/api/jobs/manual", json={"title": "Backend Intern", "company": "Acme", "location": "NYC", "kind": "internship", "url": "https://jobs.example/1", "description": "Build APIs"}).json()
     seed_verified_application_job(client.app, job["id"])
@@ -95,8 +95,23 @@ def test_malformed_planner_output_saves_no_partial_packet(client, fake_planner):
     start = client.post("/api/applications", json={"job_id": job["id"], "resume_id": resume["id"], "provider": "ollama", "confirm_cloud": False}).json()
     client.app.state.worker.run_once()
     saved = client.get("/api/applications/" + start["id"]).json()
-    assert saved["status"] == "failed"
-    assert saved["draft"] is None
+    assert saved["status"] == "manager_review"
+    assert saved["draft"]["resume_text"] == "- Python"
+    assert saved["draft"]["cover_letter"] == ""
+    assert saved["draft"]["claims"][0]["evidence_ids"] == ["resume:1"]
+    assert "evidence-preserving" in saved["draft"]["next_steps"][0]
+
+
+def test_application_requests_its_exact_json_contract_from_local_planner(client, fake_planner):
+    resume = client.post("/api/resumes", json={"name": "Backend", "text": "Python"}).json()
+    job = client.post("/api/jobs/manual", json={"title": "Backend Intern", "company": "Acme", "location": "NYC", "url": "https://jobs.example/1"}).json()
+    seed_verified_application_job(client.app, job["id"])
+    client.post("/api/applications", json={"job_id": job["id"], "resume_id": resume["id"], "provider": "ollama"})
+    client.app.state.worker.run_once()
+    schema = fake_planner.calls[-1].response_schema
+    assert schema["required"] == ["resume_text", "cover_letter", "answers", "claims", "next_steps"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["claims"]["items"]["required"] == ["claim_id", "text", "evidence_ids", "quote_anchors"]
 
 
 def test_review_draft_and_task_completion_commit_atomically(client, fake_planner):
@@ -349,7 +364,7 @@ def test_revision_uses_fixed_snapshot_and_latest_findings(client, fake_planner):
     assert client.app.state.application_service.get(app.id).snapshot == app.snapshot
 
 
-def test_unsupported_model_claims_are_not_retried(client, fake_planner):
+def test_unsupported_local_model_claims_are_replaced_without_retry(client, fake_planner):
     from dataclasses import asdict
     resume = client.post('/api/resumes', json={'name': 'Base', 'text': 'Built a Python API'}).json()
     job = client.post('/api/jobs/manual', json={'title': 'Backend Intern', 'company': 'Acme', 'url': 'https://jobs.example/1'}).json()
@@ -357,10 +372,12 @@ def test_unsupported_model_claims_are_not_retried(client, fake_planner):
     app, task_id = client.app.state.application_service.create(job['id'], resume['id'], 'ollama')
     fake_planner.result = PlannerResult(json.dumps(asdict(evidence_draft('Built an AWS cluster', anchor='Built a Python API'))))
     client.app.state.worker.run_once()
-    assert client.app.state.application_service.get(app.id).status == 'failed'
-    assert client.app.state.application_service.get(app.id).draft is None
+    saved = client.app.state.application_service.get(app.id)
+    assert saved.status == 'manager_review'
+    assert saved.draft['resume_text'] == '- Built a Python API'
+    assert 'AWS cluster' not in json.dumps(saved.draft)
     task = client.app.state.queue.get(task_id)
-    assert task.status == 'failed'
+    assert task.status == 'needs_review'
     assert task.available_at is None
     assert task.attempt_count == 1
 

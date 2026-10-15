@@ -92,6 +92,10 @@ def _complete_quotes(text: str) -> set[str]:
     for sentence in re.split(r'(?<=[.!?;])\s+', normalized):
         units.add(sentence)
         units.add(sentence.rstrip('.!?;'))
+    for line in text.splitlines():
+        line = re.sub(r'^\s*[-*•]\s+', '', line).strip()
+        if line:
+            units.add(normalize_quote(line))
     return units
 
 
