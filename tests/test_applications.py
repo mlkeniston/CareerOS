@@ -383,6 +383,34 @@ def test_revision_uses_fixed_snapshot_and_latest_findings(client, fake_planner):
     assert client.app.state.application_service.get(app.id).snapshot == app.snapshot
 
 
+def test_unsafe_local_revision_retains_last_valid_draft_without_task_failure(client, fake_planner):
+    from dataclasses import asdict
+    resume = client.post('/api/resumes', json={'name': 'Base', 'text': 'Built a Python API'}).json()
+    job = client.post('/api/jobs/manual', json={'title': 'Backend Intern', 'company': 'Acme', 'url': 'https://jobs.example/1'}).json()
+    seed_verified_application_job(client.app, job['id'])
+    app, _ = client.app.state.application_service.create(job['id'], resume['id'], 'ollama')
+    client.app.state.worker.run_once()
+    before = client.app.state.application_service.get(app.id)
+    fake_planner.result = PlannerResult(json.dumps({
+        'verdict': 'revise',
+        'findings': [{'issue': 'Needs tailoring', 'severity': 'blocking', 'evidence_ids': ['resume:1'],
+                      'revision_instruction': 'Emphasize the API work.'}],
+    }))
+    client.app.state.worker.run_once()
+    revision_id = next(task.id for task in client.app.state.queue.list() if task.kind == 'application_revision')
+    fake_planner.result = PlannerResult(json.dumps(asdict(evidence_draft('Invented claim', anchor='partial quote'))))
+
+    client.app.state.worker.run_once()
+
+    saved = client.app.state.application_service.get(app.id)
+    assert client.app.state.queue.get(revision_id).status == 'needs_review'
+    assert saved.draft_version == before.draft_version + 1
+    assert saved.draft['resume_text'] == before.draft['resume_text']
+    assert saved.draft['claims'] == before.draft['claims']
+    assert 'could not apply this revision safely' in saved.draft['next_steps'][-1]
+    assert saved.manager_cycle == 2
+
+
 def test_unsupported_local_model_claims_are_replaced_without_retry(client, fake_planner):
     from dataclasses import asdict
     resume = client.post('/api/resumes', json={'name': 'Base', 'text': 'Built a Python API'}).json()

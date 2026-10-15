@@ -181,16 +181,16 @@ class ApplicationService:
                     raise RuntimeError('Provider model changed. Review a fresh preview and confirm this task.')
                 result = self.gateway.generate(task.provider, request, task.cloud_confirmed)
             except httpx.ReadTimeout as exc:
-                if revision or task.provider != 'ollama':
+                if task.provider != 'ollama':
                     raise RetryableTaskError('Local application provider timed out. Waiting to retry.') from exc
-                # Initial local drafts have a deterministic evidence-only path;
-                # avoid several minutes of retries when a small model stalls.
+                # Local drafts have deterministic evidence-only paths; avoid
+                # several minutes of retries when a small model stalls.
             except (ProviderUnavailable, httpx.TransportError) as exc:
                 if task.provider == 'ollama':
                     raise RetryableTaskError('Local application provider is unavailable. Waiting to retry.') from exc
                 raise
             if result is None:
-                draft = _safe_base_draft(application.snapshot)
+                draft = _safe_revision_draft(application) if revision else _safe_base_draft(application.snapshot)
                 self._validate(draft, application.snapshot)
             else:
                 try:
@@ -199,9 +199,9 @@ class ApplicationService:
                     draft = ApplicationDraft.parse(json.loads(result.text))
                     self._validate(draft, application.snapshot)
                 except (json.JSONDecodeError, InvalidPlannerOutput) as exc:
-                    if revision or task.provider != 'ollama':
+                    if task.provider != 'ollama':
                         raise InvalidPlannerOutput('Planner returned an invalid application draft: ' + str(exc)) from exc
-                    draft = _safe_base_draft(application.snapshot)
+                    draft = _safe_revision_draft(application) if revision else _safe_base_draft(application.snapshot)
                     self._validate(draft, application.snapshot)
             with self.db.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
@@ -586,6 +586,17 @@ def _safe_base_draft(snapshot: dict) -> ApplicationDraft:
         claims,
         ['Review this evidence-preserving base draft; the local planner could not produce safely traceable tailored wording.'],
     )
+
+
+def _safe_revision_draft(application: Application) -> ApplicationDraft:
+    """Keep the last evidence-valid draft when a local revision is unsafe."""
+    if not application.draft:
+        raise InvalidPlannerOutput('Local revision failed and no prior draft is available')
+    draft = ApplicationDraft.parse(application.draft)
+    note = 'The local planner could not apply this revision safely; review the Hiring Manager findings and edit the draft manually.'
+    if note not in draft.next_steps:
+        draft.next_steps = [*draft.next_steps[:29], note]
+    return draft
 
 
 def _application_task(context: dict) -> str:
