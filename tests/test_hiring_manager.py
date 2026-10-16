@@ -106,7 +106,6 @@ def test_successful_third_review_clears_application(hiring_pipeline):
 
 @pytest.mark.parametrize('value', [
     {'verdict': 'revise', 'findings': [{'issue': 'Fix it'}]},
-    {'verdict': 'revise', 'findings': [{**BLOCK['findings'][0], 'evidence_ids': ['missing']}]},
     {'verdict': 'pass', 'findings': [], 'instruction': 'approve'},
     {'verdict': 'revise', 'findings': [{**BLOCK['findings'][0], 'severity': 'critical'}]},
 ])
@@ -298,13 +297,32 @@ def test_rebuilt_migration_preserves_snapshots_links_and_indexes(hiring_pipeline
             conn.execute("UPDATE applications SET snapshot_json='{}' WHERE id=?", (p.id,))
 
 
-def test_revise_without_blocking_finding_is_invalid(hiring_pipeline):
+def test_revise_without_blocking_finding_is_safely_promoted(hiring_pipeline):
     p = hiring_pipeline
     task_id = p.manager.enqueue(p.id)
     review(p, {'verdict': 'revise', 'findings': [{**BLOCK['findings'][0], 'severity': 'advisory'}]})
-    assert p.queue.get(task_id).status == 'failed'
-    assert history(p) == []
+    assert p.queue.get(task_id).status == 'completed'
+    assert history(p)[0]['findings'][0]['severity'] == 'blocking'
     assert p.service.get(p.id).status == 'manager_review'
+
+
+def test_unknown_finding_evidence_is_removed_without_clearing_review(hiring_pipeline):
+    p = hiring_pipeline
+    task_id = p.manager.enqueue(p.id)
+    review(p, {'verdict': 'revise', 'findings': [{**BLOCK['findings'][0], 'evidence_ids': ['missing']}]})
+    assert p.queue.get(task_id).status == 'completed'
+    assert history(p)[0]['findings'][0]['evidence_ids'] == []
+    assert p.service.get(p.id).status == 'manager_review'
+
+
+def test_empty_revision_becomes_actionable_blocking_finding(hiring_pipeline):
+    p = hiring_pipeline
+    task_id = p.manager.enqueue(p.id)
+    review(p, {'verdict': 'revise', 'findings': []})
+    assert p.queue.get(task_id).status == 'completed'
+    finding = history(p)[0]['findings'][0]
+    assert finding['severity'] == 'blocking'
+    assert finding['evidence_ids'] == []
 
 
 def test_old_revision_replay_after_later_cycles_has_no_side_effect(hiring_pipeline):

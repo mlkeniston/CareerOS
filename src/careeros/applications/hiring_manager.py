@@ -233,13 +233,19 @@ def _parse(text: str, evidence_ids: set[str]) -> tuple[str, list[dict]]:
                 if not isinstance(item[field], str) or not item[field].strip() or len(item[field]) > limit:
                     raise ValueError('Finding needs a concrete issue and revision instruction')
             ids = item['evidence_ids']
-            if not isinstance(ids, list) or len(ids) > 20 or any(not isinstance(i, str) or i not in evidence_ids for i in ids):
-                raise ValueError('Unknown finding evidence ID')
+            if not isinstance(ids, list) or len(ids) > 20 or any(not isinstance(i, str) for i in ids):
+                raise ValueError('Invalid finding evidence IDs')
+            item['evidence_ids'] = [evidence_id for evidence_id in ids if evidence_id in evidence_ids]
         verdict = value['verdict']
         if any(item['severity'] == 'blocking' for item in findings):
             verdict = 'revise'
-        if value['verdict'] == 'revise' and not any(item['severity'] == 'blocking' for item in findings):
-            raise ValueError('A revision requires a blocking finding')
+        elif verdict == 'revise' and findings:
+            findings[0]['severity'] = 'blocking'
+        elif verdict == 'revise':
+            findings.append(_deterministic_finding(
+                'Hiring Manager requested a revision without a concrete finding',
+                'Review the draft manually or run the local review again.',
+            ))
         return verdict, findings
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         raise InvalidPlannerOutput('Hiring Manager returned an invalid review') from exc
