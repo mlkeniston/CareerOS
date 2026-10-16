@@ -1,4 +1,5 @@
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,8 @@ import uvicorn
 from careeros.config import Settings
 from careeros.main import create_app
 from careeros.portfolio.sandbox import DockerSandboxRunner
+
+MAC_DOCKER_EXECUTABLE = Path('/Applications/Docker.app/Contents/Resources/bin/docker')
 
 
 def main():
@@ -21,7 +24,8 @@ def sandbox_command(arguments: list[str], settings: Settings) -> int:
     parser = argparse.ArgumentParser(prog="careeros sandbox")
     parser.add_argument("action", choices=["check", "prepare"])
     args = parser.parse_args(arguments)
-    runner = DockerSandboxRunner(image=settings.sandbox_image)
+    docker_executable = shutil.which('docker') or (str(MAC_DOCKER_EXECUTABLE) if MAC_DOCKER_EXECUTABLE.is_file() else 'docker')
+    runner = DockerSandboxRunner(image=settings.sandbox_image, docker_executable=docker_executable)
     if args.action == "check":
         available, message = runner.check_available()
         print(message)
@@ -30,8 +34,15 @@ def sandbox_command(arguments: list[str], settings: Settings) -> int:
     if not dockerfile.is_file():
         print("Sandbox Dockerfile is missing from this CareerOS checkout.")
         return 1
-    completed = subprocess.run(
-        ["docker", "build", "--tag", settings.sandbox_image, "--file", str(dockerfile), str(dockerfile.parent)],
-        shell=False,
-    )
+    try:
+        completed = subprocess.run(
+            [docker_executable, "build", "--tag", settings.sandbox_image, "--file", str(dockerfile), str(dockerfile.parent)],
+            shell=False,
+        )
+    except FileNotFoundError:
+        print("Docker was not found. Install and start Docker Desktop, then run `careeros sandbox prepare` again.")
+        return 1
+    except PermissionError:
+        print("CareerOS cannot execute Docker. Check Docker Desktop and the Docker executable's file permissions.")
+        return 1
     return completed.returncode
