@@ -100,13 +100,21 @@ def _condition_result(condition: str, facts: dict[str, str]) -> bool | None:
     if 'us person' in c:
         value = facts.get('us_person')
         return value == 'yes' if value in {'yes', 'no'} else None
-    if (' and ' in c or ' or ' in c) and not (('between' in c and 'graduat' in c) or 'enroll' in c):
-        return None
     if 'sponsor' in c:
-        if not re.fullmatch(r'(?:we (?:cannot|do not|are unable to) (?:provide|offer) (?:visa )?sponsorship|no (?:visa )?sponsorship(?: available| provided| offered)?)', c):
+        sponsorship_question = any(re.fullmatch(pattern, c) for pattern in (
+            r'do you (?:currently|now),? or will you (?:in the )?future require (?:visa )?sponsorship(?: to work in (?:the )?(?:us|usa|united states))?',
+            r'(?:do|will) you (?:currently|now) or (?:in the )?future require (?:visa )?sponsorship(?: to work in (?:the )?(?:us|usa|united states))?',
+            r'do you require (?:current or future )?(?:visa )?sponsorship(?: to work in (?:the )?(?:us|usa|united states))?',
+        ))
+        employer_cannot_sponsor = re.fullmatch(
+            r'(?:we (?:cannot|do not|are unable to) (?:provide|offer) (?:visa )?sponsorship|no (?:visa )?sponsorship(?: available| provided| offered)?)', c
+        )
+        if not sponsorship_question and not employer_cannot_sponsor:
             return None
         value = facts.get('sponsorship')
         return value in {'no', 'not needed', 'none'} if value in {'yes', 'no', 'not needed', 'none', 'needed'} else None
+    if (' and ' in c or ' or ' in c) and not (('between' in c and 'graduat' in c) or 'enroll' in c):
+        return None
     if 'citizen' in c:
         match = re.fullmatch(r'(?:must be|applicants must be|candidates must be) (?:a )?(' + _COUNTRY_PATTERN + r') citizen', c)
         if match:

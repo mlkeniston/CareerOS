@@ -183,6 +183,8 @@ def test_material_conditions_are_unknown_without_explicit_facts(condition):
     ('Requires 3 years of experience', {'experience_years': '3'}, True),
     ('We cannot provide visa sponsorship', {'sponsorship': 'no'}, True),
     ('We cannot provide visa sponsorship', {'sponsorship': 'yes'}, False),
+    ('Do you currently, or will you in the future require sponsorship to work in the US', {'sponsorship': 'no'}, True),
+    ('Do you currently, or will you in the future require sponsorship to work in the US', {'sponsorship': 'yes'}, False),
     ('Must qualify as a US Person', {'us_person': 'yes'}, True),
     ('Must qualify as a US Person', {'us_person': 'no'}, False),
     ('Must hold a security clearance', {'Must hold a security clearance': 'yes'}, True),
