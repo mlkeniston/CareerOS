@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import sqlite3
 import threading
 
 import httpx
@@ -11,7 +12,6 @@ from careeros.autopilot.state import AutopilotState
 from careeros.jobs.models import JobListing, JobQuery, SourceResult
 from careeros.jobs.repository import JobRepository
 from careeros.jobs.speedyapply import SpeedyApplySource
-from careeros.portfolio.service import PortfolioBrief
 from careeros.queue import TaskQueue
 from careeros.profiles.repository import ResumeRepository
 from careeros.jobs.verification import EmployerPostingVerifier, VerificationResult
@@ -661,6 +661,21 @@ def test_application_dispatch_failure_does_not_stop_later_listing(client):
     assert outcome.result['listing_failures'] == 1
     assert outcome.result['applications_queued'] == 1
     assert len(app.state.application_service.list()) == 1
+
+
+def test_application_dispatch_database_failure_fails_the_scan(client):
+    app = client.app
+    app.state.profile_repository.update('', '', ['Software Engineer'], [], [])
+    app.state.resume_repository.create('Current', 'Built Python APIs')
+    app.state.job_discovery_service.sources = [_Source('fixture', SourceResult([
+        _job('Software Engineer Intern', 'internship', 'Build APIs')
+    ], []))]
+    app.state.application_service.create_automatic = lambda *args: (_ for _ in ()).throw(
+        sqlite3.OperationalError('database is full')
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match='database is full'):
+        _run_discovery(client)
 
 
 def test_same_employer_role_from_two_sources_queues_once_and_recovers_handoff(client):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 from collections import Counter
 from datetime import datetime
 
@@ -183,7 +184,9 @@ class JobDiscoveryService:
                             from_worker="job_discovery", to_worker="application", event_type="application_eligible",
                             payload={"job_id": dispatch["job_id"], "resume_id": dispatch["resume_id"], "gates_passed": True},
                         )
-            except Exception:
+            except sqlite3.Error:
+                raise
+            except (LookupError, RuntimeError, ValueError):
                 scan['listing_failures'] += 1
                 continue
         scan.update({'queued': queued, 'verification_counts': dict(sorted(outcomes.items()))})

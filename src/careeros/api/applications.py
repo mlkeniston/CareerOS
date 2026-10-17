@@ -82,13 +82,7 @@ def create_application(payload: PrepareInput, request: Request):
 
 @router.get("/api/applications")
 def list_applications(request: Request):
-    result = []
-    for item in request.app.state.application_service.list():
-        job = request.app.state.job_repository.get(item.job_id)
-        task = request.app.state.queue.get(item.task_id) if item.task_id else None
-        status = "interrupted" if item.status == "preparing" and task and task.status == "interrupted" else item.status
-        result.append({"id": item.id, "job_id": item.job_id, "job_title": job.title if job else "Saved job", "status": status, "task_status": task.status if task else None, "updated_at": item.updated_at})
-    return result
+    return request.app.state.application_service.summaries()
 
 
 @router.get("/api/applications/{application_id}")
@@ -107,9 +101,14 @@ def get_application(application_id: str, request: Request):
     for review in reviews:
         review['reviewed_draft'] = contexts.get(review['cycle'])
     manager_task = request.app.state.queue.get(item.manager_task_id) if item.manager_task_id else None
+    review_task = request.app.state.application_service.review_task(application_id)
     return {"rejection_reason": item.rejection_reason, "exported_at": export['exported_at'] if export else None,
             "manager_task_status": manager_task.status if manager_task else None,
             "manager_task_error": manager_task.error if manager_task else None,
+            "review_task_id": review_task.id if review_task else None,
+            "review_task_status": review_task.status if review_task else None,
+            "review_task_error": review_task.error if review_task else None,
+            "can_retry_review": bool(review_task and review_task.provider == 'ollama' and review_task.status in {'failed', 'interrupted'}),
             "id": item.id, "job_id": item.job_id, "resume_id": item.resume_id, "task_id": item.task_id, "status": status, "draft": item.draft, "job_title": job.title if job else "Saved job", "task_status": task.status if task else None, "task_error": task.error if task else None, "task_provider": task.provider if task else None, "snapshot": item.snapshot, "snapshot_hash": item.snapshot_hash, "provider": item.provider, "model": item.model, "draft_version": item.draft_version, "clearance_stale": item.clearance_stale, "manager_cycle": item.manager_cycle, "manager_task_id": item.manager_task_id, "hold_reason": item.hold_reason, "hiring_reviews": reviews}
 
 
@@ -149,6 +148,17 @@ def reject_application(application_id: str, payload: RejectInput, request: Reque
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {'id': item.id, 'status': item.status, 'rejection_reason': item.rejection_reason}
+
+
+@router.post('/api/applications/{application_id}/retry-review', status_code=202)
+def retry_application_review(application_id: str, request: Request):
+    try:
+        task_id = request.app.state.application_service.retry_review(application_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {'id': application_id, 'task_id': task_id, 'status': 'manager_review'}
 
 
 class EvidenceInput(BaseModel):

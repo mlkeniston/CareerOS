@@ -56,3 +56,33 @@ def test_us_only_job_search_excludes_foreign_and_unknown_before_limit(db):
 
     assert len(results) == 1
     assert results[0].external_id == "seattle"
+
+    with db.connect() as conn:
+        statuses = {row["external_id"]: row["location_status"] for row in conn.execute(
+            "SELECT external_id,location_status FROM jobs"
+        )}
+    assert statuses == {"london": "outside_us", "remote": "unknown", "seattle": "us", "boston": "us"}
+
+
+def test_us_only_job_search_filters_in_sql(db):
+    repository = JobRepository(db)
+    repository.upsert_many([
+        JobListing("fixture", "us-sql", "Intern", "Acme", "Boston, MA", "internship", "https://jobs.example/us-sql", "", None, "now"),
+    ])
+    statements = []
+    original_connect = db.connect
+
+    def traced_connect():
+        connection = original_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    db.connect = traced_connect
+    try:
+        repository.search(JobQuery(us_only=True, limit=1))
+    finally:
+        db.connect = original_connect
+
+    search = next(statement for statement in statements if statement.startswith("SELECT jobs.*"))
+    assert "location_status='us'" in search
+    assert "LIMIT 1" in search

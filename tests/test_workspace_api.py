@@ -4,7 +4,6 @@ from conftest import seed_verified_application_job
 import pytest
 
 from careeros.jobs.models import JobListing
-from careeros.portfolio.service import PortfolioBrief
 from careeros.workflows.repository import WorkflowRepository
 
 
@@ -113,12 +112,13 @@ def test_snapshot_maps_queue_states_and_sanitizes_private_content(client, monkey
         conn.execute("UPDATE applications SET status='needs_review',draft_json=? WHERE id=?", (json.dumps({"cover_letter": "PRIVATE DRAFT CONTENT"}), review_app.id))
         conn.execute("UPDATE applications SET status='approved' WHERE id=?", (approved_app.id,))
 
-    review_portfolio_task, review_proposal_id = app.state.portfolio_service.create(
-        PortfolioBrief("reviewed", "Private proposal", "PRIVATE PROPOSAL BRIEF"), "ollama"
-    )
-    applied_portfolio_task, applied_proposal_id = app.state.portfolio_service.create(
-        PortfolioBrief("shipped", "Private applied proposal", "PRIVATE APPLIED BRIEF"), "ollama"
-    )
+    with app.state.db.connect() as conn:
+        review_portfolio_task = queue.enqueue_in_transaction(conn, 'portfolio', {'proposal_id': 'reviewed-proposal'}, 'ollama', False)
+        applied_portfolio_task = queue.enqueue_in_transaction(conn, 'portfolio', {'proposal_id': 'applied-proposal'}, 'ollama', False)
+        conn.execute("INSERT INTO portfolio_proposals(id,project_id,task_id,status,title,created_at,updated_at) VALUES('reviewed-proposal','reviewed',?,'preparing','Private proposal','now','now')", (review_portfolio_task,))
+        conn.execute("INSERT INTO portfolio_proposals(id,project_id,task_id,status,title,created_at,updated_at) VALUES('applied-proposal','shipped',?,'preparing','Private applied proposal','now','now')", (applied_portfolio_task,))
+    review_proposal_id = 'reviewed-proposal'
+    applied_proposal_id = 'applied-proposal'
     assert queue.claim_next({"portfolio"}).id == review_portfolio_task
     assert queue.claim_next({"portfolio"}).id == applied_portfolio_task
     queue.finish(review_portfolio_task, {"files": "PRIVATE PROPOSAL FILE"}, "needs_review")

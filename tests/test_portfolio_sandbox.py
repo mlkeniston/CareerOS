@@ -37,6 +37,31 @@ def test_runner_uses_a_locked_down_container_and_fixed_test_command(tmp_path):
     assert kwargs["timeout"] == 75
 
 
+def test_python_runner_executes_the_exact_manifest_test_files(tmp_path):
+    (tmp_path / "checks").mkdir()
+    (tmp_path / "checks/qa.py").write_text("raise AssertionError('must run')\n")
+    calls = []
+    manifest = Manifest()
+    manifest.test_files = ["checks/qa.py"]
+
+    DockerSandboxRunner(run=lambda argv, **kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 0)).run(tmp_path, manifest)
+
+    assert calls[0][-4:] == ["python3", "-m", "unittest", "/workspace/checks/qa.py"]
+
+
+def test_static_runner_executes_declared_node_tests(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/site.test.js").write_text("throw new Error('must run')\n")
+    calls = []
+    manifest = Manifest()
+    manifest.runtime = "static"
+    manifest.test_files = ["tests/site.test.js"]
+
+    DockerSandboxRunner(run=lambda argv, **kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 0)).run(tmp_path, manifest)
+
+    assert calls[0][-3:] == ["node", "--test", "/workspace/tests/site.test.js"]
+
+
 def test_missing_docker_fails_closed_and_never_runs_host_code(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests/test_app.py").write_text("import unittest\n")

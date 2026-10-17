@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 
 from careeros.db import Database
-from careeros.jobs.location import classify_location, US
+from careeros.jobs.location import classify_location
 from careeros.jobs.models import JobListing, JobQuery
 from careeros.jobs.verification import VerificationResult
 from careeros.queue import now
@@ -18,20 +18,31 @@ class JobRepository:
     def __init__(self, db: Database, fts_enabled: bool | None = None):
         self.db = db
         self.fts_enabled = db.fts_enabled if fts_enabled is None else fts_enabled
+        self._backfill_location_status()
+
+    def _backfill_location_status(self) -> None:
+        with self.db.connect() as conn:
+            if conn.execute("SELECT 1 FROM settings WHERE key='job_location_status_backfilled'").fetchone():
+                return
+            for row in conn.execute("SELECT id,location FROM jobs"):
+                conn.execute("UPDATE jobs SET location_status=? WHERE id=?", (classify_location(row["location"]), row["id"]))
+            conn.execute("INSERT INTO settings(key,value) VALUES('job_location_status_backfilled','1')")
 
     def upsert_many(self, jobs: list[JobListing]) -> int:
         stamp = now()
+        inserted = 0
         with self.db.connect() as conn:
             for job in jobs:
                 values = asdict(job)
-                conn.execute("""INSERT INTO jobs(id,source,external_id,title,company,location,kind,original_kind,remote,url,description,published_at,fetched_at,is_saved,source_url,employer_url,source_age,application_url,requisition_id)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,external_id) DO UPDATE SET
+                inserted += conn.execute("SELECT 1 FROM jobs WHERE source=? AND external_id=?", (values["source"], values["external_id"])).fetchone() is None
+                conn.execute("""INSERT INTO jobs(id,source,external_id,title,company,location,location_status,kind,original_kind,remote,url,description,published_at,fetched_at,is_saved,source_url,employer_url,source_age,application_url,requisition_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,external_id) DO UPDATE SET
                     title=excluded.title,company=excluded.company,location=excluded.location,kind=excluded.kind,original_kind=excluded.original_kind,
                     remote=excluded.remote,url=excluded.url,description=excluded.description,published_at=excluded.published_at,fetched_at=excluded.fetched_at,
                     source_url=excluded.source_url,employer_url=excluded.employer_url,source_age=excluded.source_age,
-                    application_url=excluded.application_url,requisition_id=excluded.requisition_id""",
-                    (values["id"] or str(uuid.uuid4()), values["source"], values["external_id"], values["title"], values["company"], values["location"], values["kind"], values["original_kind"], int(values["remote"]), values["url"], values["description"], values["published_at"], values["fetched_at"] or stamp, int(values["is_saved"]), values["source_url"], values["employer_url"], values["source_age"], values["application_url"], values["requisition_id"]))
-        return len(jobs)
+                    application_url=excluded.application_url,requisition_id=excluded.requisition_id,location_status=excluded.location_status""",
+                    (values["id"] or str(uuid.uuid4()), values["source"], values["external_id"], values["title"], values["company"], values["location"], classify_location(values["location"]), values["kind"], values["original_kind"], int(values["remote"]), values["url"], values["description"], values["published_at"], values["fetched_at"] or stamp, int(values["is_saved"]), values["source_url"], values["employer_url"], values["source_age"], values["application_url"], values["requisition_id"]))
+        return inserted
 
     def add_manual(self, job: JobListing) -> JobListing:
         job.source = "manual"
@@ -77,18 +88,13 @@ class JobRepository:
             where.append("remote=1")
         if saved_only:
             where.append("is_saved=1")
-        clause = " WHERE " + " AND ".join(where) if where else ""
-        if not query.us_only:
-            params.append(query.limit)
-            limit_clause = " LIMIT ?"
-        else:
-            limit_clause = ""
-        with self.db.connect() as conn:
-            rows = conn.execute("SELECT jobs.* FROM jobs" + joins + clause + " ORDER BY coalesce(published_at,'') DESC, company, title" + limit_clause, params).fetchall()
-        jobs = [_job(row) for row in rows]
         if query.us_only:
-            jobs = [job for job in jobs if classify_location(job.location) == US]
-        return jobs[:query.limit]
+            where.append("jobs.location_status='us'")
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        params.append(query.limit)
+        with self.db.connect() as conn:
+            rows = conn.execute("SELECT jobs.* FROM jobs" + joins + clause + " ORDER BY coalesce(published_at,'') DESC, company, title LIMIT ?", params).fetchall()
+        return [_job(row) for row in rows]
 
     def recent(self, limit: int = 100) -> list[JobListing]:
         """Return the newest cached listings for matching and office summaries."""

@@ -71,11 +71,9 @@ class DockerSandboxRunner:
                     raise ValueError("Project test file is missing or unsafe")
             runtime = manifest.runtime
             if runtime == "python":
-                command = ["python3", "-m", "unittest", "discover", "-s", "/workspace", "-p", "test*.py"]
-            elif runtime == "node":
+                command = ["python3", "-m", "unittest", *[f"/workspace/{p}" for p in test_files]]
+            elif runtime in {"node", "static"}:
                 command = ["node", "--test", *[f"/workspace/{p}" for p in test_files]]
-            elif runtime == "static":
-                command = ["python3", "-m", "compileall", "-q", "/workspace"]
             else:
                 raise ValueError("Unsupported sandbox runtime")
             argv = [

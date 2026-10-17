@@ -1,27 +1,10 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from careeros.planner.gateway import PaidUseConfirmationRequired, ProviderUnavailable
-from careeros.portfolio.models import PortfolioBrief
 from careeros.portfolio.paths import UnsafePortfolioPath
 from careeros.portfolio.service import ExistingPortfolioFile, InvalidProposal
 
 router = APIRouter()
-
-
-class ProposalInput(BaseModel):
-    project_id: str = Field(min_length=1, max_length=48)
-    title: str = Field(min_length=1, max_length=120)
-    description: str = Field(min_length=1, max_length=8000)
-    provider: str = Field(pattern="^(ollama|openai)$")
-    confirm_cloud: bool = False
-    preview_token: str | None = None
-
-
-class ProposalPreviewInput(BaseModel):
-    project_id: str = Field(min_length=1, max_length=48)
-    title: str = Field(min_length=1, max_length=120)
-    description: str = Field(min_length=1, max_length=8000)
 
 
 class ApplyInput(BaseModel):
@@ -29,23 +12,19 @@ class ApplyInput(BaseModel):
 
 
 @router.post("/api/portfolio/preview")
-def preview_proposal(payload: ProposalPreviewInput, request: Request):
+def preview_proposal():
     raise HTTPException(410, "CareerOS now discovers project ideas and prepares them automatically; manual briefs are disabled.")
 
 
 @router.post("/api/portfolio/proposals", status_code=202)
-def create_proposal(payload: ProposalInput, request: Request):
+def create_proposal():
     raise HTTPException(410, "CareerOS creates portfolio projects from public ideas automatically; manual briefs are disabled.")
 
 
 @router.get("/api/portfolio/proposals")
 def list_proposals(request: Request):
-    proposals = request.app.state.portfolio_service.list()
+    proposals = request.app.state.portfolio_service.summaries()
     for proposal in proposals:
-        task = request.app.state.queue.get(proposal["task_id"])
-        if proposal["status"] == "preparing" and task and task.status == "interrupted":
-            proposal["status"] = "interrupted"
-        proposal["task_status"] = task.status if task else None
         proposal["qa_history"] = [_qa_record(item) for item in request.app.state.project_qa_service.history(proposal["id"])]
         latest = request.app.state.project_qa_service.latest(proposal["id"])
         proposal["latest_qa"] = _qa_record(latest) if latest else None

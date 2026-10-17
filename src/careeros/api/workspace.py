@@ -33,7 +33,7 @@ _STATUS_PRIORITY = {"running": 0, "queued": 1, "needs_review": 2, "failed": 3, "
 def get_workspace(request: Request):
     db = request.app.state.db
     queue = request.app.state.queue
-    tasks = queue.list(limit=1000)
+    tasks = queue.list(limit=100)
     by_kind = {kind: _current_task(tasks, kind) for *_prefix, kind in _WORKERS if kind}
     latest_discovery = next(
         (task for task in tasks if task.kind == "job_discovery" and task.status == "completed"), None
@@ -73,8 +73,9 @@ def get_workspace(request: Request):
     outreach_service = request.app.state.outreach_service
     outreach_model_state = outreach_service.model_status()
     outreach_model_name = request.app.state.settings.outreach_model
-    recent_jobs = request.app.state.job_repository.recent(limit=500)
-    jobs_matched = sum(1 for job in recent_jobs if score_technology_role(job)[0] >= 70)
+    jobs_matched = (latest_discovery.result or {}).get("jobs_matched") if latest_discovery else None
+    if not isinstance(jobs_matched, int) or jobs_matched < 0:
+        jobs_matched = sum(1 for job in request.app.state.job_repository.recent(limit=500) if score_technology_role(job)[0] >= 70)
     worker_items = []
     for worker_id, department, station_id, color, kind in _WORKERS:
         task = by_kind.get(kind) if kind else None

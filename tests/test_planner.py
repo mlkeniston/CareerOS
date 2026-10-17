@@ -61,6 +61,24 @@ def test_openai_adapter_posts_only_after_invocation_to_requested_model():
     client.close()
 
 
+def test_openai_adapter_sends_requested_json_schema():
+    observed = []
+    schema = {"type": "object", "required": ["resume_text"]}
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: observed.append(request) or httpx.Response(200, json={"output_text": "{}"})
+    ))
+
+    OpenAIPlanner("sk-test-only", client=client).generate(
+        PlannerRequest("prepare", "Return JSON.", response_schema=schema)
+    )
+
+    body = json.loads(observed[0].content)
+    assert body["text"]["format"] == {
+        "type": "json_schema", "name": "careeros_response", "strict": True, "schema": schema,
+    }
+    client.close()
+
+
 def test_ollama_health_checks_tags_without_generating_text():
     observed = []
 
@@ -77,6 +95,21 @@ def test_ollama_health_checks_tags_without_generating_text():
     assert len(observed) == 1
     assert observed[0].method == "GET"
     assert str(observed[0].url) == "http://127.0.0.1:11434/api/tags"
+    client.close()
+
+
+def test_ollama_health_reuses_a_recent_result():
+    calls = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json={"models": [{"name": "qwen2.5:1.5b"}]})
+    ))
+    planner = OllamaPlanner("http://127.0.0.1:11434", "qwen2.5:1.5b")
+    planner.client.close()
+    planner.client = client
+
+    assert planner.health() == "ready"
+    assert planner.health() == "ready"
+    assert len(calls) == 1
     client.close()
 
 

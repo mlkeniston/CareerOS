@@ -53,7 +53,7 @@ def create_resume(payload: ResumeInput, request: Request):
 
 @router.get("/api/resumes")
 def list_resumes(request: Request):
-    return [{"id": item.id, "name": item.name, "created_at": item.created_at, "updated_at": item.updated_at} for item in request.app.state.resume_repository.list()]
+    return request.app.state.resume_repository.summaries()
 
 
 @router.get("/api/resumes/{resume_id}")

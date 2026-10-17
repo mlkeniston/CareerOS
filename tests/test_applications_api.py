@@ -12,6 +12,16 @@ def application_inputs(client, verified=True):
     return {'job_id': job['id'], 'resume_id': resume['id'], 'provider': 'ollama'}
 
 
+def test_application_list_uses_bounded_summary_query(client, monkeypatch):
+    started = client.post('/api/applications', json=application_inputs(client)).json()
+    monkeypatch.setattr(client.app.state.application_service, 'list', lambda: (_ for _ in ()).throw(AssertionError('loaded full applications')))
+
+    response = client.get('/api/applications')
+
+    assert response.status_code == 200
+    assert response.json()[0]['id'] == started['id']
+
+
 def test_application_cannot_enqueue_without_verified_passing_job(client):
     inputs = application_inputs(client, verified=False)
     response = client.post('/api/applications', json=inputs)
@@ -204,3 +214,45 @@ def test_new_fact_needs_explicit_attestation_and_new_snapshot(client):
     assert client.get('/api/profile').json()['eligibility_facts']['additional experience'] == 'Built a Java API'
     assert client.get(route).json()['snapshot'] == before
     assert response.json()['requires_new_application'] is True
+
+
+def test_failed_hiring_manager_review_can_be_retried_without_using_a_cycle(client):
+    started = client.post('/api/applications', json=application_inputs(client)).json()
+    client.app.state.worker.run_once()
+    route = f"/api/applications/{started['id']}"
+    before = client.get(route).json()
+    with client.app.state.db.connect() as conn:
+        conn.execute("UPDATE tasks SET status='failed',error='invalid review' WHERE id=?", (before['manager_task_id'],))
+
+    failed = client.get(route).json()
+    assert failed['review_task_status'] == 'failed'
+    assert failed['can_retry_review'] is True
+    response = client.post(route + '/retry-review')
+
+    assert response.status_code == 202
+    replacement = client.app.state.queue.get(response.json()['task_id'])
+    assert replacement.kind == 'hiring_manager'
+    assert replacement.payload['cycle'] == before['manager_cycle']
+
+
+def test_failed_local_revision_is_visible_and_can_be_retried(client):
+    started = client.post('/api/applications', json=application_inputs(client)).json()
+    client.app.state.worker.run_once()
+    route = f"/api/applications/{started['id']}"
+    application = client.get(route).json()
+    payload = {'application_id': started['id'], 'manager_revision_cycle': application['manager_cycle'],
+               'draft_version': application['draft_version'], 'findings': [{'issue': 'Tighten wording'}]}
+    failed_id = client.app.state.queue.enqueue('application_revision', payload, 'ollama')
+    with client.app.state.db.connect() as conn:
+        conn.execute("UPDATE tasks SET status='completed' WHERE id=?", (application['manager_task_id'],))
+        conn.execute("UPDATE tasks SET status='failed',error='revision failed' WHERE id=?", (failed_id,))
+
+    failed = client.get(route).json()
+    assert failed['review_task_id'] == failed_id
+    assert failed['review_task_status'] == 'failed'
+    response = client.post(route + '/retry-review')
+
+    assert response.status_code == 202
+    replacement = client.app.state.queue.get(response.json()['task_id'])
+    assert replacement.kind == 'application_revision'
+    assert replacement.payload == payload

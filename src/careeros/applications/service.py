@@ -127,6 +127,50 @@ class ApplicationService:
             rows = conn.execute('SELECT * FROM applications ORDER BY updated_at DESC').fetchall()
         return [_application(row) for row in rows]
 
+    def summaries(self, limit: int = 100) -> list[dict]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """SELECT applications.id,applications.job_id,jobs.title AS job_title,
+                   CASE WHEN applications.status='preparing' AND tasks.status='interrupted' THEN 'interrupted' ELSE applications.status END AS status,
+                   tasks.status AS task_status,applications.updated_at
+                   FROM applications JOIN jobs ON jobs.id=applications.job_id
+                   LEFT JOIN tasks ON tasks.id=applications.task_id
+                   ORDER BY applications.updated_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def review_task(self, application_id: str) -> Task | None:
+        application = self.get(application_id)
+        if application is None:
+            return None
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """SELECT id FROM tasks WHERE
+                   (id=? OR (kind='application_revision' AND json_extract(payload_json,'$.application_id')=?))
+                   AND status IN ('queued','running','failed','interrupted')
+                   ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, updated_at DESC LIMIT 1""",
+                (application.manager_task_id, application_id),
+            ).fetchone()
+        return self.queue.get(row['id']) if row else None
+
+    def retry_review(self, application_id: str) -> str:
+        application = self.get(application_id)
+        if application is None:
+            raise LookupError('Application not found')
+        if application.status != 'manager_review':
+            raise RuntimeError('Application is not waiting for a local review')
+        current = self.review_task(application_id)
+        if current is None or current.status not in {'failed', 'interrupted'}:
+            raise RuntimeError('There is no failed local review to retry')
+        if current.provider != 'ollama':
+            raise RuntimeError('Cloud revisions require a fresh preview and paid confirmation')
+        if current.kind == 'hiring_manager':
+            return self.hiring_manager.enqueue(application_id)
+        if current.kind != 'application_revision':
+            raise RuntimeError('There is no failed local review to retry')
+        return self.queue.enqueue('application_revision', current.payload, 'ollama', False)
+
     def handle_task(self, task: Task) -> TaskOutcome:
         return self._prepare(task, revision=False)
 

@@ -14,6 +14,15 @@ def test_upsert_deduplicates_and_searches(db):
     assert found[0].title == "Updated Internship"
 
 
+def test_upsert_reports_only_new_jobs(db):
+    repo = JobRepository(db)
+    listing = JobListing("arbeitnow", "new-count", "Software Intern", "Acme", "Seattle, WA", "internship", "https://jobs.example/new-count", "Build APIs", None, "2026-10-09")
+
+    assert repo.upsert_many([listing]) == 1
+    assert repo.upsert_many([replace(listing, title="Updated Internship")]) == 0
+    assert repo.search(JobQuery(text="Updated"))[0].title == "Updated Internship"
+
+
 def test_search_fallback_treats_percent_as_text(db):
     repo = JobRepository(db, fts_enabled=False)
     listing = JobListing("manual", "x", "Intern 100%", "Acme", "NYC", "internship", "https://jobs.example/x", "", None, "2026-10-09")

@@ -58,3 +58,13 @@ def test_cloud_preview_discloses_eligibility_and_requires_new_confirmation(clien
 
 def test_profile_rejects_ambiguous_fact_keys(client):
     assert client.put('/api/profile', json={'eligibility_facts': {'citizenship': 'Canada', ' Citizenship ': 'United States'}}).status_code == 422
+
+
+def test_resume_list_uses_bounded_metadata_query(client, monkeypatch):
+    created = client.post('/api/resumes', json={'name': 'Base', 'text': 'private full resume text'}).json()
+    monkeypatch.setattr(client.app.state.resume_repository, 'list', lambda: (_ for _ in ()).throw(AssertionError('loaded full resumes')))
+
+    response = client.get('/api/resumes')
+
+    assert response.status_code == 200
+    assert response.json() == [{key: created[key] for key in ('id', 'name', 'created_at', 'updated_at')}]

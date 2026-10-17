@@ -1,4 +1,5 @@
 import httpx
+import time
 from typing import Literal
 
 from careeros.planner.protocols import PlannerRequest, PlannerResult
@@ -10,6 +11,7 @@ class OllamaPlanner:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.client = httpx.Client(timeout=httpx.Timeout(120, connect=5), trust_env=False)
+        self._health_cache = None
 
     def generate(self, request: PlannerRequest) -> PlannerResult:
         response = self.client.post(self.base_url + "/api/chat", json={
@@ -30,6 +32,8 @@ class OllamaPlanner:
         return PlannerResult(text=data.get("message", {}).get("content", ""))
 
     def health(self) -> Literal["ready", "offline", "model_missing"]:
+        if self._health_cache and time.monotonic() - self._health_cache[0] < 10:
+            return self._health_cache[1]
         try:
             response = self.client.get(
                 self.base_url + "/api/tags",
@@ -51,6 +55,8 @@ class OllamaPlanner:
                 expected.add(self.model[:-7])
             elif ":" not in self.model.rsplit("/", 1)[-1]:
                 expected.add(self.model + ":latest")
-            return "ready" if names.intersection(expected) else "model_missing"
+            status = "ready" if names.intersection(expected) else "model_missing"
         except (httpx.HTTPError, ValueError, TypeError):
-            return "offline"
+            status = "offline"
+        self._health_cache = (time.monotonic(), status)
+        return status

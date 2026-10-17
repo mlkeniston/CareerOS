@@ -1127,6 +1127,7 @@ function renderApplicationReview(application, focus = false) {
   panel.append(element("p", "review-status", `Draft: ${application.provider || "local"} · ${application.model || "Unknown model"}. Hiring Manager: Ollama · ${application.manager_task_status || "Waiting"}. Review ${application.manager_cycle || 0} of 3.`));
   if (application.hold_reason) panel.append(element("p", "review-status held", application.hold_reason));
   if (application.manager_task_error) panel.append(element("p", "review-status held", application.manager_task_error));
+  if (application.review_task_error && application.review_task_error !== application.manager_task_error) panel.append(element("p", "review-status held", application.review_task_error));
   if (application.rejection_reason) panel.append(element("p", "", `Your revision request: ${application.rejection_reason}`));
   if (["failed", "interrupted"].includes(application.status)) {
     panel.append(element("p", "muted", application.task_error || "Draft preparation stopped."));
@@ -1164,6 +1165,12 @@ function renderApplicationReview(application, focus = false) {
   panel.append(grid);
   const actions = element("div", "review-actions");
   const refresh = async () => { await loadApplication(application.id); await loadOfficeApplications(); };
+  if (application.can_retry_review) {
+    const retry = element("button", "button button-soft", "Retry local review");
+    retry.type = "button";
+    retry.addEventListener("click", async () => { try { await api(`/api/applications/${encodeURIComponent(application.id)}/retry-review`, {method: "POST"}); notify("Local review queued again"); await refresh(); } catch (error) { notify(error.message); } });
+    actions.append(retry);
+  }
   const changed = () => resume.value !== draft.resume_text || cover.value !== draft.cover_letter || answers.value !== JSON.stringify(draft.answers || {}, null, 2) || claims.value !== JSON.stringify(draft.claims || [], null, 2);
   if (canEdit) {
     const edit = element("button", "button button-soft", "Edit"); edit.type = "button";

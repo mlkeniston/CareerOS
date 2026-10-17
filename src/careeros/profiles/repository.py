@@ -72,6 +72,13 @@ class ResumeRepository:
             rows = conn.execute("SELECT * FROM resumes ORDER BY updated_at DESC").fetchall()
         return [_resume(row) for row in rows]
 
+    def summaries(self, limit: int = 100) -> list[dict]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT id,name,created_at,updated_at FROM resumes ORDER BY updated_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def most_recent(self) -> Resume | None:
         with self.db.connect() as conn:
             row = conn.execute("SELECT * FROM resumes ORDER BY updated_at DESC, rowid DESC LIMIT 1").fetchone()
